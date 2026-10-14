@@ -139,6 +139,29 @@ export default {
     save(db);
   },
 
+  // สถานะการอ่านแยกตามคนที่ "ดูในฐานะ"
+  async listMine() {
+    const db = load();
+    return clone(db.mine?.[db.sessionId] || { reads: {}, bookmarks: [] });
+  },
+
+  async putRead(storyId, { position, read_at }) {
+    const db = load();
+    db.mine ||= {};
+    const m = (db.mine[db.sessionId] ||= { reads: {}, bookmarks: [] });
+    m.reads[storyId] = { position: Math.round(position), read_at };
+    save(db);
+  },
+
+  async setBookmark(storyId, on) {
+    const db = load();
+    db.mine ||= {};
+    const m = (db.mine[db.sessionId] ||= { reads: {}, bookmarks: [] });
+    m.bookmarks = m.bookmarks.filter((x) => x !== storyId);
+    if (on) m.bookmarks.push(storyId);
+    save(db);
+  },
+
   reset() {
     localStorage.removeItem(KEY);
     localStorage.removeItem(FILES_KEY);

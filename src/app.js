@@ -14,7 +14,10 @@ const S = {
     q: '', off: new Set(store.get('yom-off', [])), tags: new Set(), who: new Set(),
     tagQ: '', whoQ: '', tagAll: false, whoAll: false,
     syn: store.get('yom-syn', true), draftsOnly: false, mfOpen: false,
+    mine: 'all',   // all | unread | reading | new | fav
   },
+  me: { reads: {}, fav: new Set() },   // การอ่านของฉัน: ล็อกอิน = Supabase, ไม่ล็อกอิน = เบราว์เซอร์นี้
+  people: {},                          // id → ชื่อ (ทีมงานเท่านั้นที่โหลดได้)
   view: '', lastHash: '#/', dirty: false, inApp: 0,
   stack: [], stackFromApp: false,   // ประวัติการเปิดอ่านในหน้าต่างอ่าน
   ed: null,
@@ -49,7 +52,64 @@ async function refresh() {
   S.profile = profile;
   [S.stories, S.tags] = await Promise.all([S.api.listStories(), S.api.listTags()]);
   S.index = buildIndex(S.stories);
+  await loadMe();
+  S.people = {};
+  if (isEditor()) {
+    try { for (const p of await S.api.listProfiles()) S.people[p.id] = p.display_name || p.email; } catch { /* ไม่มีชื่อก็ยังใช้งานได้ */ }
+  }
 }
+
+// ===================================================================== การอ่านของฉัน (อ่านแล้ว / อ่านถึงไหน / ที่ชอบ)
+const NEW_DAYS = 30;
+const LOCAL_ME = 'yom-me';
+const isQuote = (s) => s.type === 'คำคม';
+
+async function loadMe() {
+  const local = store.get(LOCAL_ME, { reads: {}, bookmarks: [] });
+  if (!S.user) {
+    S.me = { reads: local.reads, fav: new Set(local.bookmarks) };
+    return;
+  }
+  let mine = { reads: {}, bookmarks: [] };
+  try { mine = await S.api.listMine(); } catch (err) { console.warn(err); }
+  S.me = { reads: mine.reads, fav: new Set(mine.bookmarks) };
+  // อ่านไว้ก่อนล็อกอิน: รวมเข้าบัญชีแล้วล้างของในเครื่อง
+  const ids = new Set(S.stories.map((x) => x.id));
+  const jobs = [];
+  for (const [id, r] of Object.entries(local.reads)) {
+    if (!ids.has(id)) continue;
+    const cur = S.me.reads[id];
+    const merged = { position: Math.max(r.position || 0, cur?.position || 0), read_at: cur?.read_at || r.read_at || null };
+    if (!cur || merged.position !== cur.position || merged.read_at !== cur.read_at) {
+      S.me.reads[id] = merged;
+      jobs.push(S.api.putRead(id, merged));
+    }
+  }
+  for (const id of local.bookmarks) {
+    if (ids.has(id) && !S.me.fav.has(id)) { S.me.fav.add(id); jobs.push(S.api.setBookmark(id, true)); }
+  }
+  if (jobs.length) {
+    try { await Promise.all(jobs); store.set(LOCAL_ME, { reads: {}, bookmarks: [] }); } catch (err) { console.warn(err); }
+  } else if (Object.keys(local.reads).length || local.bookmarks.length) store.set(LOCAL_ME, { reads: {}, bookmarks: [] });
+}
+
+function saveLocalMe() {
+  if (!S.user) store.set(LOCAL_ME, { reads: S.me.reads, bookmarks: [...S.me.fav] });
+}
+
+function putRead(id, patch) {
+  const cur = S.me.reads[id] || { position: 0, read_at: null };
+  const next = { ...cur, ...patch };
+  if (cur.position === next.position && cur.read_at === next.read_at && S.me.reads[id]) return;
+  S.me.reads[id] = next;
+  if (S.user) S.api.putRead(id, next).catch((err) => toast(err.message, true));
+  else saveLocalMe();
+}
+
+const readInfo = (s) => S.me.reads[s.id] || null;
+const isRead = (s) => !isQuote(s) && !!readInfo(s)?.read_at;
+const isNew = (s) => !readInfo(s) && Date.now() - new Date(s.created_at).getTime() < NEW_DAYS * 864e5;
+const inProgress = (s) => !isQuote(s) && !isRead(s) && (readInfo(s)?.position || 0) >= 3;
 
 function onHash() {
   if (S.skipHash) { S.skipHash = false; return; }
@@ -164,6 +224,7 @@ function viewSearch() {
     </div>
     <div class="filters">
       <div class="seg typesel" id="typesel" role="group" aria-label="ประเภทเรื่อง"></div>
+      <div class="seg mine" id="minesel" role="group" aria-label="สถานะการอ่าน"></div>
       <label class="toggle"><input type="checkbox" data-change="syn" ${f.syn ? 'checked' : ''}> ค้นคำใกล้เคียงด้วย</label>
       ${isEditor() ? `<label class="toggle"><input type="checkbox" data-change="drafts" ${f.draftsOnly ? 'checked' : ''}> เฉพาะร่าง</label>` : ''}
       <span class="seg-hint">แตะประเภทเพื่อซ่อน/แสดง · แตะค้าง = ดูประเภทนั้นอย่างเดียว</span>
@@ -200,8 +261,16 @@ function viewSearch() {
   renderAllFilters();
 }
 
+// อัปเดตป้ายอ่านแล้ว/ใหม่/% ในรายการ หลังปิดหน้าต่างอ่าน
+function refreshCards() {
+  if (S.view !== 'search' || !document.getElementById('results')) return;
+  const keep = window.scrollY;
+  renderMine(); renderRecent(); renderResults();
+  window.scrollTo(0, keep);
+}
+
 function renderAllFilters() {
-  renderTypeSel(); renderTagChips(); renderWhoChips(); renderMfBtn(); renderRecent(); renderResults();
+  renderMine(); renderTypeSel(); renderTagChips(); renderWhoChips(); renderMfBtn(); renderRecent(); renderResults();
 }
 
 function countBy(list, pick) {
@@ -213,6 +282,25 @@ function countBy(list, pick) {
 function setOff(set) {
   S.f.off = set;
   store.set('yom-off', [...set]);
+}
+
+const MINE = [['all', 'ทุกเรื่อง'], ['unread', 'ยังไม่อ่าน'], ['reading', 'อ่านค้าง'], ['new', 'มาใหม่'], ['fav', '★ ที่ชอบ']];
+const MINE_TEST = {
+  all: () => true,
+  unread: (s) => !isQuote(s) && !isRead(s),
+  reading: inProgress,
+  new: isNew,
+  fav: (s) => S.me.fav.has(s.id),
+};
+
+function renderMine() {
+  const box = document.getElementById('minesel');
+  if (!box) return;
+  const n = (k) => S.stories.filter(MINE_TEST[k]).length;
+  box.innerHTML = MINE.map(([k, l]) => {
+    const c = k === 'all' ? '' : n(k);
+    return `<button data-act="mine" data-v="${k}" aria-pressed="${S.f.mine === k}" class="m-${k}">${l}${c ? ` <span class="n">${c}</span>` : ''}</button>`;
+  }).join('');
 }
 
 function renderTypeSel() {
@@ -264,29 +352,37 @@ function renderRecent() {
   const idle = !f.q.trim() && !f.tags.size && !f.who.size;
   const list = store.get('yom-recent', []).map((id) => S.stories.find((s) => s.id === id)).filter(Boolean).slice(0, 8);
   box.innerHTML = idle && list.length
-    ? `<span class="lab">เปิดล่าสุด</span>${list.map((s) => `<a class="tag" href="#/s/${encodeURIComponent(s.id)}">${esc(s.title)}</a>`).join('')}`
+    ? `<span class="lab">เปิดล่าสุด</span>${list.map((s) => `<a class="tag" href="#/s/${encodeURIComponent(s.id)}">${isRead(s) ? '✓ ' : ''}${inProgress(s) ? `<span class="pct">${readInfo(s).position}%</span> ` : ''}${esc(s.title)}</a>`).join('')}`
     : '';
 }
 
 function renderResults() {
   const f = S.f;
   const q = f.q.trim();
-  const { list, extra } = search(S.index, f, S.tags);
-  const filtered = q || f.tags.size || f.who.size || f.off.size || f.draftsOnly;
+  const found = search(S.index, f, S.tags);
+  const extra = found.extra;
+  const list = found.list.filter(MINE_TEST[f.mine]);
+  const filtered = q || f.tags.size || f.who.size || f.off.size || f.draftsOnly || f.mine !== 'all';
+  const readable = S.stories.filter((s) => !isQuote(s) && s.status === 'published');
+  const readN = readable.filter(isRead).length;
   const bits = [
     `${filtered ? 'พบ' : 'ทั้งหมด'} ${list.length} เรื่อง`,
+    f.mine !== 'all' ? MINE.find(([k]) => k === f.mine)[1].replace('★ ', '') : '',
     f.off.size ? `ซ่อนอยู่ ${f.off.size} ประเภท` : '',
     f.tags.size ? `แท็ก: ${[...f.tags].join(' + ')}` : '',
     f.who.size ? `ผู้กล่าว: ${[...f.who].join(' หรือ ')}` : '',
   ].filter(Boolean).join(' · ');
-  document.getElementById('info').innerHTML = `<span>${esc(bits)}${extra.length ? ` <span class="hint">(รวมคำใกล้เคียง: ${esc(extra.join(', '))})</span>` : ''}</span>`;
+  const progress = readN ? `<span class="readcount" title="นับเฉพาะเรื่องที่ไม่ใช่คำคม">อ่านแล้ว ${readN} จาก ${readable.length} เรื่อง</span>` : '';
+  document.getElementById('info').innerHTML = `<span>${esc(bits)}${extra.length ? ` <span class="hint">(รวมคำใกล้เคียง: ${esc(extra.join(', '))})</span>` : ''}</span>${progress}`;
 
   const box = document.getElementById('results');
   if (!list.length) {
     box.innerHTML = `<div class="empty">${f.off.size >= TYPES.length
       ? '<strong>ยังไม่ได้เลือกประเภท</strong>แตะ “ทั้งหมด” หรือเลือกประเภทที่อยากอ่าน'
       : S.stories.length
-        ? '<strong>ไม่พบเรื่องที่ตรงกับคำค้น</strong>ลองคำที่สั้นลง เปิด “ค้นคำใกล้เคียงด้วย” หรือล้างแท็กที่เลือก'
+        ? (f.mine !== 'all' && found.list.length
+          ? `<strong>ไม่มีเรื่องใน “${MINE.find(([k]) => k === f.mine)[1]}”</strong>${f.mine === 'fav' ? 'กด ☆ ที่เรื่องไหนก็ได้เพื่อเก็บไว้ที่นี่' : 'แตะ “ทุกเรื่อง” เพื่อดูทั้งหมด'}`
+          : '<strong>ไม่พบเรื่องที่ตรงกับคำค้น</strong>ลองคำที่สั้นลง เปิด “ค้นคำใกล้เคียงด้วย” หรือล้างแท็กที่เลือก')
         : `<strong>คลังยังว่างอยู่</strong>${isEditor() ? '<a href="#/new">เพิ่มเรื่องแรก</a>' : 'ทีมงานกำลังเตรียมเนื้อหา'}`}</div>`;
     return;
   }
@@ -300,15 +396,30 @@ function renderResults() {
   }).join('');
 }
 
+function favBtn(s, cls = '') {
+  const on = S.me.fav.has(s.id);
+  return `<button class="fav ${cls}" data-act="fav" data-v="${esc(s.id)}" aria-pressed="${on}" title="${on ? 'เอาออกจากเรื่องที่ชอบ' : 'เก็บไว้ในเรื่องที่ชอบ'}" aria-label="${on ? 'เอาออกจากเรื่องที่ชอบ' : 'เก็บไว้ในเรื่องที่ชอบ'}">${on ? '★' : '☆'}</button>`;
+}
+
+function readBadge(s) {
+  if (isRead(s)) return '<span class="rd done">✓ อ่านแล้ว</span>';
+  if (inProgress(s)) {
+    const p = readInfo(s).position;
+    return `<span class="rd prog"><span class="bar" style="--p:${p}%"></span>อ่านถึง ${p}%</span>`;
+  }
+  return '';
+}
+
 function card(s, q, terms) {
   const href = `#/s/${encodeURIComponent(s.id)}`;
   const quote = s.type === 'คำคม';
+  const badges = `${s.status === 'draft' ? '<span class="badge-draft">ร่าง</span> ' : ''}${isNew(s) ? '<span class="badge-new">ใหม่</span> ' : ''}`;
   const title = quote
     ? `<p class="brief quote"><a href="${href}" style="text-decoration:none">${terms.length ? markTerms(s.body, terms) : esc(s.body)}</a></p>`
-    : `<h3><a href="${href}">${s.status === 'draft' ? '<span class="badge-draft">ร่าง</span> ' : ''}${terms.length ? markTerms(s.title, terms) : esc(s.title)}</a></h3>`;
+    : `<h3><a href="${href}">${badges}${terms.length ? markTerms(s.title, terms) : esc(s.title)}</a></h3>`;
   const brief = quote ? '' : `<p class="brief ${terms.length ? 'snip' : ''}">${excerptHtml(s, q)}</p>`;
-  return `<article class="result" style="${tc(s.type)}">
-    ${quote && s.status === 'draft' ? '<span class="badge-draft">ร่าง</span>' : ''}
+  return `<article class="result ${isRead(s) ? 'is-read' : ''}" style="${tc(s.type)}" data-id="${esc(s.id)}">
+    ${quote && (s.status === 'draft' || isNew(s)) ? `<div>${badges}</div>` : ''}
     ${title}
     <div class="meta">
       <span class="ttype">${s.type}</span>${s.attachments.length ? ICON.clip : ''}
@@ -317,7 +428,8 @@ function card(s, q, terms) {
     </div>
     ${brief}
     ${s.tags.length ? `<div class="chips">${s.tags.map((t) => `<button class="chip" data-act="tag" data-v="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
-    <div class="rfoot"><span class="rstat">เพิ่มเมื่อ ${thaiDate(s.created_at)}</span><a class="btn small" href="${href}">อ่าน</a></div>
+    <div class="rfoot"><span class="rstat">เพิ่มเมื่อ ${thaiDate(s.created_at)}${readBadge(s)}</span>
+      <span class="ract">${favBtn(s)}<a class="btn small" href="${href}">${inProgress(s) ? 'อ่านต่อ' : 'อ่าน'}</a></span></div>
   </article>`;
 }
 
@@ -342,6 +454,7 @@ function bindLongPress(el) {
 
 // ===================================================================== หน้าต่างอ่าน
 function openDrawer(id) {
+  flushPos();
   const s = S.stories.find((x) => x.id === id);
   if (S.stack.at(-2) === id) S.stack.pop();
   else { if (!S.stack.length) S.stackFromApp = S.inApp > 0; S.stack.push(id); }
@@ -367,18 +480,25 @@ function openDrawer(id) {
     ? `<a class="btn" href="${esc(S.api.fileUrl(p))}" target="_blank" rel="noopener">ดูไฟล์ต้นฉบับ (PDF)</a>`
     : `<img src="${esc(S.api.fileUrl(p))}" alt="ภาพต้นฉบับของ ${esc(s.title)}" loading="lazy">`).join('')}</div>` : '';
   const rel = related(s);
+  const r0 = readInfo(s);
+  const resumeAt = !quote && r0 && !r0.read_at && r0.position >= 3 && r0.position < 95 ? r0.position : 0;
+  const by = isEditor() ? byline(s) : '';
 
   d.style.cssText = tc(s.type);
   d.innerHTML = `
     <div class="d-head">
       ${S.stack.length > 1 ? '<button class="btn small" data-act="dback">‹ กลับ</button>' : ''}
       <span class="spacer"></span>
+      ${favBtn(s, 'btn small')}
+      ${quote ? '' : `<button class="btn small readtg" data-act="readtg" data-v="${esc(s.id)}"></button>`}
       <button class="btn small" data-act="font" data-v="-2" aria-label="ตัวอักษรเล็กลง">ก−</button>
       <button class="btn small" data-act="font" data-v="2" aria-label="ตัวอักษรใหญ่ขึ้น">ก+</button>
       ${isEditor() ? `<a class="btn small" href="#/edit/${encodeURIComponent(s.id)}">แก้ไข</a>` : ''}
       <button class="btn small" data-act="close" aria-label="ปิด">ปิด ✕</button>
+      ${quote ? '' : '<div class="d-prog" aria-hidden="true"><span></span></div>'}
     </div>
     <div class="d-body">
+      ${resumeAt ? `<button class="resume" data-act="resume" data-v="${resumeAt}">อ่านต่อจากที่ค้างไว้ <strong>${resumeAt}%</strong> ↓</button>` : ''}
       <div class="meta"><span class="ttype">${s.type}</span>${s.status === 'draft' ? '<span class="badge-draft">ร่าง ยังไม่เผยแพร่</span>' : ''}
         ${s.speakers.map((n) => `<a class="whochip" href="#/?who=${encodeURIComponent(n)}" title="ดูเรื่องทั้งหมดของ ${esc(n)}">${esc(n)}</a>`).join('')}
         ${s.source ? `<span>ที่มา: ${esc(s.source)}</span>` : ''}
@@ -389,14 +509,77 @@ function openDrawer(id) {
       <div class="reading ${quote ? 'quote' : ''}">${bodyHtml(s)}</div>
       ${files}
       ${s.tags.length ? `<div class="sec-h">แท็ก</div><div class="chips">${s.tags.map((t) => `<a class="chip" href="#/?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join('')}</div>` : ''}
+      ${by}
       ${rel.length ? `<div class="sec-h">เรื่องที่เกี่ยวข้อง</div><ul class="related">${rel.map((r) =>
         `<li><a href="#/s/${encodeURIComponent(r.id)}" style="${tc(r.type)}"><span class="t">${esc(r.title)}</span><span class="ttype">${r.type}</span></a></li>`).join('')}</ul>` : ''}
     </div>`;
-  d.querySelector('.d-body').scrollTop = 0;
+  const body = d.querySelector('.d-body');
+  body.scrollTop = 0;
   d.querySelector('[data-act="close"]').focus({ preventScroll: true });
+  trackReading(s, body);
+}
+
+// ---- ติดตามการอ่านในหน้าต่างอ่าน
+// เรื่องสั้น (ไม่ต้องเลื่อน) = อ่านแล้วทันที · เรื่องยาว = จำ % ที่เลื่อนถึง และถือว่าอ่านจบเมื่อถึง 95%
+function trackReading(s, body) {
+  S.rd = { id: s.id, pos: null, timer: null };
+  if (!readInfo(s)) putRead(s.id, { position: 0, read_at: null });   // เปิดแล้ว = ไม่ใช่ "ใหม่" อีก
+  updateReadBtn(s);
+  if (isQuote(s)) return;
+  const bar = document.querySelector('.d-prog span');
+  const pct = () => {
+    const max = body.scrollHeight - body.clientHeight;
+    return max <= 40 ? 100 : Math.min(100, Math.round((body.scrollTop / max) * 100));
+  };
+  requestAnimationFrame(() => {
+    if (body.scrollHeight - body.clientHeight <= 40) {
+      if (bar) bar.style.width = '100%';
+      if (!isRead(s)) { putRead(s.id, { position: 100, read_at: new Date().toISOString() }); updateReadBtn(s); }
+    }
+  });
+  body.addEventListener('scroll', () => {
+    const p = pct();
+    if (bar) bar.style.width = p + '%';
+    if (S.rd?.id !== s.id) return;
+    S.rd.pos = p;
+    clearTimeout(S.rd.timer);
+    S.rd.timer = setTimeout(flushPos, 1500);
+    if (p >= 95 && !isRead(s)) { putRead(s.id, { position: 100, read_at: new Date().toISOString() }); updateReadBtn(s); }
+  }, { passive: true });
+}
+
+function flushPos() {
+  const rd = S.rd;
+  if (!rd || rd.pos == null) return;
+  clearTimeout(rd.timer);
+  const s = S.stories.find((x) => x.id === rd.id);
+  if (s && !isRead(s) && rd.pos >= 3) putRead(s.id, { position: rd.pos });
+  rd.pos = null;
+}
+
+function updateReadBtn(s) {
+  const b = document.querySelector('.readtg');
+  if (!b) return;
+  const on = isRead(s);
+  b.textContent = on ? '✓ อ่านแล้ว' : '○ อ่านแล้ว';
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', on);
+  b.title = on ? 'แตะเพื่อกลับเป็นยังไม่อ่าน' : 'แตะเพื่อทำเครื่องหมายว่าอ่านจบแล้ว';
+}
+
+// เพิ่มโดย / แก้ล่าสุดโดย (เห็นเฉพาะทีมงาน)
+function byline(s) {
+  const name = (id) => (id && S.people[id]) || 'ไม่ทราบชื่อ';
+  const edited = s.updated_at && s.updated_at !== s.created_at && (s.updated_by || s.updated_at.slice(0, 16) !== s.created_at.slice(0, 16));
+  return `<p class="byline">เพิ่มโดย <strong>${esc(name(s.created_by))}</strong> · ${thaiDate(s.created_at)}${
+    edited ? ` <span class="sep">·</span> แก้ล่าสุดโดย <strong>${esc(name(s.updated_by || s.created_by))}</strong> · ${thaiDate(s.updated_at)}` : ''}</p>`;
 }
 
 function closeDrawer() {
+  flushPos();
+  const had = !!S.rd;
+  S.rd = null;
+  if (had) refreshCards();
   document.querySelector('.drawer')?.remove();
   document.querySelector('.scrim')?.remove();
   document.body.classList.remove('locked');
@@ -443,6 +626,8 @@ function viewEditor(id) {
     id: null, type: store.get('yom-last-type', 'เรื่องเล่า'), title: '', body: '', highlights: [], tags: [], speakers: [],
     source: '', attachments: [], status: 'published', expect: null, pending: [],
   };
+  S.ed.bulk = false;
+  S.ed.split = store.get('yom-bulk-split', 'blank');
 
   app.innerHTML = shell(`
     <div class="page">
@@ -451,19 +636,29 @@ function viewEditor(id) {
         <div class="field"><span class="label" id="lbl-type">ประเภท</span>
           <div class="seg typesel typepick" id="ed-type" role="radiogroup" aria-labelledby="lbl-type"></div></div>
 
-        <div class="field" id="f-title">
+        ${s ? '' : `<div class="field only-quote">
+          <span class="label" id="lbl-bulk">เพิ่มคำคม</span>
+          <div class="seg pick" id="ed-bulk" role="radiogroup" aria-labelledby="lbl-bulk"></div>
+        </div>`}
+
+        <div class="field" id="f-title" data-nobulk>
           <label for="ed-title">ชื่อเรื่อง <span class="hint" id="title-hint"></span></label>
           <input class="input" id="ed-title" value="${esc(S.ed.title)}" autocomplete="off">
         </div>
 
         <div class="field">
-          <label for="ed-body">เนื้อหา <span class="hint">กด Tab เพื่อย่อหน้า</span></label>
+          <label for="ed-body" id="body-label">เนื้อหา <span class="hint">กด Tab เพื่อย่อหน้า</span></label>
+          <div class="bulkopt only-bulk">
+            <span class="hint">แยกคำคมด้วย</span>
+            <div class="seg" id="ed-split" role="radiogroup" aria-label="วิธีแยกคำคม"></div>
+          </div>
           <textarea class="textarea" id="ed-body">${esc(S.ed.body)}</textarea>
-          <div class="sugg">
+          <div class="only-bulk" id="bulk-prev" aria-live="polite"></div>
+          <div class="sugg" data-nobulk>
             <button type="button" class="btn small" data-act="gem-add">ไฮไลต์ประโยคที่เลือก</button>
             <span class="hint">ลากเลือกประโยคเด็ดในกล่องเนื้อหาก่อน แล้วกดปุ่มนี้</span>
           </div>
-          <ul class="gemlist" id="ed-gems"></ul>
+          <ul class="gemlist" id="ed-gems" data-nobulk></ul>
         </div>
 
         <div class="field">
@@ -475,7 +670,7 @@ function viewEditor(id) {
         </div>
 
         <div class="field">
-          <label for="ed-sp-in" id="sp-label">${whoLabel(S.ed.type)}</label>
+          <label for="ed-sp-in"><span id="sp-label">${whoLabel(S.ed.type)}</span> <span class="hint only-bulk">ใช้กับคำคมที่ไม่ได้ระบุชื่อท้ายข้อความ</span></label>
           <div class="tokbox"><span id="ed-sp" style="display:contents"></span>
             <input id="ed-sp-in" list="sp-list" placeholder="พิมพ์ชื่อแล้วกด Enter ใส่ได้หลายชื่อ" autocomplete="off"></div>
           <datalist id="sp-list">${countBy(S.stories, (x) => x.speakers).map(([n]) => `<option value="${esc(n)}">`).join('')}</datalist>
@@ -487,7 +682,7 @@ function viewEditor(id) {
           <input class="input" id="ed-source" value="${esc(S.ed.source)}" autocomplete="off">
         </div>
 
-        <div class="field">
+        <div class="field" data-nobulk>
           <span class="label">ไฟล์ต้นฉบับ <span class="hint">รูปหรือ PDF · รูปใหญ่จะถูกย่อให้เอง</span></span>
           <label class="btn" for="ed-file">${ICON.clip} แนบรูป / PDF</label>
           <input type="file" id="ed-file" accept="image/*,application/pdf" multiple hidden>
@@ -506,7 +701,7 @@ function viewEditor(id) {
           <span class="spacer"></span>
           ${s ? '<button type="button" class="btn danger" data-act="trash">ย้ายไปถังขยะ</button>' : ''}
         </div>
-        ${s ? `<p class="byline">เพิ่มเมื่อ ${thaiDate(s.created_at)} · แก้ไขล่าสุด ${thaiDate(s.updated_at)}</p>` : ''}
+        ${s ? byline(s) : ''}
       </form>
     </div>`, s ? '' : '#/new');
 
@@ -518,7 +713,7 @@ function viewEditor(id) {
   let tt;
   body.addEventListener('input', () => {
     S.ed.body = body.value; dirty();
-    clearTimeout(tt); tt = setTimeout(() => { edTags(); edGems(); }, 300);
+    clearTimeout(tt); tt = setTimeout(() => { edTags(); edGems(); edBulkPreview(); }, 250);
   });
   body.addEventListener('keydown', onTabIndent);
   tokInput($('ed-tag-in'), 'tags', edTags);
@@ -541,6 +736,131 @@ function viewEditor(id) {
   edType(); edGems(); edTags(); edSpeakers(); edFiles(); edStatus();
 }
 
+// ---- เพิ่มคำคมทีละหลายอัน
+function edBulk() {
+  const box = document.getElementById('ed-bulk');
+  const form = document.getElementById('ed');
+  if (S.ed.type !== 'คำคม') S.ed.bulk = false;
+  form.classList.toggle('quote-mode', S.ed.type === 'คำคม' && !S.ed.id);
+  form.classList.toggle('bulk', S.ed.bulk);
+  if (!box) return;
+  box.innerHTML = `
+    <button type="button" role="radio" data-act="ed-bulk" data-v="one" aria-pressed="${!S.ed.bulk}" aria-checked="${!S.ed.bulk}">ทีละอัน</button>
+    <button type="button" role="radio" data-act="ed-bulk" data-v="many" aria-pressed="${S.ed.bulk}" aria-checked="${S.ed.bulk}">ทีละหลายอัน</button>`;
+  document.getElementById('ed-split').innerHTML = [['blank', 'บรรทัดว่าง'], ['line', 'ขึ้นบรรทัดใหม่']].map(([v, l]) =>
+    `<button type="button" role="radio" data-act="ed-split" data-v="${v}" aria-pressed="${S.ed.split === v}" aria-checked="${S.ed.split === v}">${l}</button>`).join('');
+  document.getElementById('body-label').innerHTML = S.ed.bulk
+    ? 'วางคำคมหลายอัน <span class="hint">ใส่ชื่อผู้กล่าวท้ายคำคมได้ เช่น “… — หลวงพ่อ”</span>'
+    : 'เนื้อหา <span class="hint">กด Tab เพื่อย่อหน้า</span>';
+  document.getElementById('ed-body').placeholder = S.ed.bulk
+    ? (S.ed.split === 'blank'
+      ? 'ความสุขอยู่ที่ใจ ไม่ได้อยู่ที่ของ\n— หลวงพ่อ\n\nโกรธเขา เท่ากับเอาไฟเผาตัวเอง'
+      : 'ความสุขอยู่ที่ใจ ไม่ได้อยู่ที่ของ — หลวงพ่อ\nโกรธเขา เท่ากับเอาไฟเผาตัวเอง')
+    : '';
+  document.getElementById('ed-save').textContent = S.ed.bulk ? 'บันทึกคำคมทั้งหมด' : 'บันทึกลงคลัง';
+  edBulkPreview();
+}
+
+// แยกข้อความยาวเป็นคำคมทีละอัน · ชื่อท้ายข้อความ (— ชื่อ) = ผู้กล่าวของคำคมนั้น
+function parseBulk(text, mode) {
+  const chunks = mode === 'line' ? text.split(/\n/) : text.split(/\n[ \t]*\n/);
+  const DASH = /^\s*[—–]|^\s*-{1,2}\s/;
+  const out = [];
+  for (const raw of chunks) {
+    let lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) continue;
+    let who = '';
+    // บรรทัดสุดท้ายขึ้นต้นด้วยขีด = ชื่อผู้กล่าว
+    if (lines.length > 1 && DASH.test(lines.at(-1))) who = lines.pop().replace(/^\s*[—–-]+\s*/, '');
+    let body = lines.join('\n');
+    // หรือชื่อต่อท้ายในบรรทัดเดียวกัน: "… — ชื่อ"
+    const m = !who && body.match(/\s[—–]\s*([^—–\n]{1,40})$/);
+    if (m) { who = m[1].trim(); body = body.slice(0, m.index); }
+    body = body
+      .replace(/^(\d+[.)]|[•*·-])\s+/, '')               // เลขข้อ/สัญลักษณ์หน้าข้อ
+      .replace(/^["“”'‘]+|["“”'’]+$/g, '')               // เครื่องหมายคำพูดครอบ
+      .trim();
+    if (body) out.push({ body, who: who.replace(/^["“”]|["“”]$/g, '').trim() });
+  }
+  return out;
+}
+
+function edBulkPreview() {
+  const box = document.getElementById('bulk-prev');
+  if (!box || !S.ed.bulk) return;
+  const items = parseBulk(S.ed.body, S.ed.split);
+  const have = new Set(S.stories.filter(isQuote).map((x) => norm(x.body)));
+  let dup = 0;
+  const seen = new Set();
+  const rows = items.map((it, i) => {
+    const k = norm(it.body);
+    const isDup = have.has(k) || seen.has(k);
+    seen.add(k);
+    if (isDup) dup++;
+    const who = it.who ? [it.who] : S.ed.speakers;
+    return `<li class="${isDup ? 'dup' : ''}"><span class="no">${i + 1}</span><div class="grow"><p>${esc(it.body)}</p>
+      ${who.length ? `<span class="whos">${who.map((n) => `<span class="tok who">${esc(n)}</span>`).join('')}</span>` : ''}
+      ${isDup ? '<span class="hint">มีในคลังแล้ว จะข้าม</span>' : ''}</div></li>`;
+  });
+  const n = items.length - dup;
+  box.innerHTML = items.length
+    ? `<div class="bulk-sum">จะเพิ่ม <strong>${n}</strong> คำคม${dup ? ` · ข้าม ${dup} ที่ซ้ำ` : ''}</div><ol class="bulklist">${rows.join('')}</ol>`
+    : '<p class="hint">วางข้อความแล้ว ตัวอย่างการแยกจะขึ้นตรงนี้</p>';
+}
+
+async function saveBulk() {
+  const ed = S.ed;
+  const btn = document.getElementById('ed-save');
+  const have = new Set(S.stories.filter(isQuote).map((x) => norm(x.body)));
+  const items = parseBulk(ed.body, ed.split).filter((it) => {
+    const k = norm(it.body);
+    if (have.has(k)) return false;
+    have.add(k);
+    return true;
+  });
+  if (!items.length) return toast('ไม่มีคำคมใหม่ให้บันทึก', true);
+  btn.disabled = true;
+  let done = 0;
+  try {
+    for (const it of items) {
+      btn.textContent = `กำลังบันทึก ${done + 1}/${items.length}…`;
+      const base = autoTitle(it.body);
+      const data = {
+        id: null, type: 'คำคม', body: it.body, highlights: [], tags: ed.tags,
+        speakers: it.who ? [it.who] : ed.speakers, source: ed.source.trim(), attachments: [], status: ed.status,
+      };
+      for (let n = 1; ; n++) {
+        try { await S.api.saveStory({ ...data, title: n === 1 ? base : `${base} (${n})` }); break; }
+        catch (err) { if (err.code !== 'duplicate' || n > 30) throw err; }
+      }
+      done++;
+    }
+    for (const t of ed.tags) if (!S.tags.some((x) => x.name === t)) await S.api.saveTag({ name: t, synonyms: [], is_standard: false, sort: 900 });
+    store.set('yom-last-type', 'คำคม');
+    S.dirty = false;
+    await refresh();
+    // ไปหน้าค้นหา เปิดเฉพาะคำคม
+    setOff(new Set(TYPES.filter((t) => t !== 'คำคม')));
+    Object.assign(S.f, { q: '', mine: 'all' });
+    S.f.tags.clear(); S.f.who.clear();
+    S.view = '';
+    toast(`บันทึกคำคม ${done} อันแล้ว`);
+    location.hash = '#/';
+  } catch (err) {
+    // ที่บันทึกไปแล้วเก็บไว้ ส่วนที่เหลืออยู่ในกล่องให้ลองใหม่
+    toast(`บันทึกได้ ${done} จาก ${items.length} อัน: ${err.message}`, true);
+    if (done) {
+      const left = items.slice(done).map((it) => it.body + (it.who ? `\n— ${it.who}` : '')).join('\n\n');
+      ed.body = left; ed.split = 'blank';
+      document.getElementById('ed-body').value = left;
+      await refresh();
+      edBulk();
+    }
+    btn.disabled = false;
+    btn.textContent = 'บันทึกคำคมทั้งหมด';
+  }
+}
+
 function edType() {
   const t = S.ed.type;
   document.getElementById('ed-type').innerHTML = TYPES.map((x) =>
@@ -548,6 +868,7 @@ function edType() {
   const optional = t === 'คำคม' || t === 'โอวาท';
   document.getElementById('title-hint').textContent = optional ? 'ไม่ใส่ก็ได้ ระบบตั้งชื่อจากข้อความให้' : '';
   document.getElementById('sp-label').textContent = whoLabel(t);
+  edBulk();
 }
 
 function edGems() {
@@ -572,6 +893,7 @@ function edTags() {
 
 function edSpeakers() {
   const chosen = S.ed.speakers;
+  edBulkPreview();
   document.getElementById('ed-sp').innerHTML = tokHtml('speakers', chosen, 'who');
   const known = countBy(S.stories, (x) => x.speakers).map(([n]) => n).filter((n) => !chosen.includes(n)).slice(0, 12);
   document.getElementById('ed-sp-sug').innerHTML = known.length
@@ -627,6 +949,13 @@ function onTabIndent(e) {
 
 async function saveEditor(force = false) {
   const ed = S.ed;
+  if (ed.bulk) {
+    for (const [inp, key] of [['ed-tag-in', 'tags'], ['ed-sp-in', 'speakers']]) {
+      const v = document.getElementById(inp).value.trim();
+      if (v && !ed[key].includes(v)) ed[key].push(v);
+    }
+    return saveBulk();
+  }
   const btn = document.getElementById('ed-save');
   // ข้อความที่ค้างอยู่ในช่องแท็ก/ผู้กล่าว ให้นับด้วย
   for (const [inp, key] of [['ed-tag-in', 'tags'], ['ed-sp-in', 'speakers']]) {
@@ -788,6 +1117,35 @@ const actions = {
     else location.hash = '#/';
   },
   dback() { history.back(); },
+  mine(el) { S.f.mine = el.dataset.v; renderMine(); renderResults(); },
+  async fav(el) {
+    const id = el.dataset.v;
+    const on = !S.me.fav.has(id);
+    if (on) S.me.fav.add(id); else S.me.fav.delete(id);
+    document.querySelectorAll(`.fav[data-v="${CSS.escape(id)}"]`).forEach((b) => {
+      b.setAttribute('aria-pressed', on);
+      b.textContent = on ? '★' : '☆';
+      b.title = b.ariaLabel = on ? 'เอาออกจากเรื่องที่ชอบ' : 'เก็บไว้ในเรื่องที่ชอบ';
+    });
+    if (S.view === 'search') { renderMine(); if (S.f.mine === 'fav') renderResults(); }
+    toast(on ? 'เก็บไว้ใน “ที่ชอบ” แล้ว' : 'เอาออกจาก “ที่ชอบ” แล้ว');
+    if (S.user) { try { await S.api.setBookmark(id, on); } catch (err) { toast(err.message, true); } } else saveLocalMe();
+  },
+  readtg(el) {
+    const s = S.stories.find((x) => x.id === el.dataset.v);
+    if (!s) return;
+    if (isRead(s)) putRead(s.id, { position: 0, read_at: null });
+    else putRead(s.id, { position: 100, read_at: new Date().toISOString() });
+    if (S.rd) S.rd.pos = null;
+    updateReadBtn(s);
+    refreshCards();
+  },
+  resume(el) {
+    const body = document.querySelector('.d-body');
+    const max = body.scrollHeight - body.clientHeight;
+    body.scrollTo({ top: (max * Number(el.dataset.v)) / 100, behavior: 'smooth' });
+    el.remove();
+  },
   font(el) {
     const cur = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--read'), 10) || 19;
     setRead(cur + Number(el.dataset.v));
@@ -795,6 +1153,8 @@ const actions = {
 
   'ed-type'(el) { S.ed.type = el.dataset.v; S.dirty = true; edType(); },
   'ed-status'(el) { S.ed.status = el.dataset.v; S.dirty = true; edStatus(); },
+  'ed-bulk'(el) { S.ed.bulk = el.dataset.v === 'many'; edBulk(); },
+  'ed-split'(el) { S.ed.split = el.dataset.v; store.set('yom-bulk-split', S.ed.split); edBulk(); },
   'ed-add'(el) {
     const k = el.dataset.k;
     if (!S.ed[k].includes(el.dataset.v)) S.ed[k].push(el.dataset.v);

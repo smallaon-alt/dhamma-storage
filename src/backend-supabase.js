@@ -118,6 +118,39 @@ export function create(url, anonKey) {
       return data;
     },
 
+    // ---------- การอ่านและเรื่องที่ชอบของตัวเอง (RLS ให้เห็นเฉพาะของตัวเอง) ----------
+    async listMine() {
+      const [r, b] = await Promise.all([
+        sb.from('reads').select('story_id,position,read_at'),
+        sb.from('bookmarks').select('story_id'),
+      ]);
+      fail(r.error || b.error, 'โหลดสถานะการอ่านไม่สำเร็จ');
+      return {
+        reads: Object.fromEntries(r.data.map((x) => [x.story_id, { position: x.position, read_at: x.read_at }])),
+        bookmarks: b.data.map((x) => x.story_id),
+      };
+    },
+
+    async putRead(storyId, { position, read_at }) {
+      const { data } = await sb.auth.getSession();
+      const user_id = data.session?.user?.id;
+      if (!user_id) return;
+      const { error } = await sb.from('reads').upsert({
+        user_id, story_id: storyId, position: Math.round(position), read_at, updated_at: new Date().toISOString(),
+      });
+      fail(error, 'บันทึกการอ่านไม่สำเร็จ');
+    },
+
+    async setBookmark(storyId, on) {
+      const { data } = await sb.auth.getSession();
+      const user_id = data.session?.user?.id;
+      if (!user_id) return;
+      const { error } = on
+        ? await sb.from('bookmarks').upsert({ user_id, story_id: storyId })
+        : await sb.from('bookmarks').delete().eq('user_id', user_id).eq('story_id', storyId);
+      fail(error, 'บันทึกเรื่องที่ชอบไม่สำเร็จ');
+    },
+
     async setRole(id, role) {
       const { error } = await sb.from('profiles').update({ role }).eq('id', id);
       fail(error, 'เปลี่ยนบทบาทไม่สำเร็จ');
