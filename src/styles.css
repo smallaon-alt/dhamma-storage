@@ -254,9 +254,11 @@ main { padding: 18px 0 80px; }
 .byline .sep { margin: 0 2px; }
 
 /* ---------- เพิ่มคำคมทีละหลายอัน ---------- */
-#ed .only-quote, #ed .only-bulk { display: none; }
-#ed.quote-mode .only-quote, #ed.bulk .only-bulk { display: block; }
-#ed.bulk .bulkopt { display: flex; }
+#ed .only-multi, #ed .only-bulk, #ed .only-book { display: none; }
+#ed.multi-mode .only-multi, #ed.bulk .only-bulk, #ed.book-mode .only-book { display: block; }
+#ed.book-mode .bookrow { display: flex; }
+#ed.bulk.quote-mode .bulkopt { display: flex; }
+#ed.bulk:not(.quote-mode) .bulkopt { display: none; }
 #ed.bulk [data-nobulk] { display: none; }
 #ed.bulk #ed-body { min-height: 240px; }
 .bulkopt { align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -301,3 +303,46 @@ main { padding: 18px 0 80px; }
   @keyframes pop { from { opacity: 0; } to { opacity: 1; } }
 }
 .bulklist .tok { padding: 2px 11px; font-size: 13px; }
+
+/* ---------- หนังสือแบ่งบท ---------- */
+.bookrow { gap: 12px; align-items: flex-end; margin-bottom: 4px; }
+.bookrow label { display: block; font-weight: 600; margin-bottom: 6px; }
+.bookrow .input.order { width: 90px; text-align: center; }
+#book-hint { margin: 0 0 18px; }
+.bookref { display: inline-flex; align-items: center; gap: 5px; color: var(--c-หนังสือ); font-weight: 500; text-decoration: none; }
+.bookref:hover { text-decoration: underline; }
+.bookref .chno { color: var(--muted); font-weight: 400; margin-left: 4px; font-size: .92em; }
+.toc ol { margin: 4px 0 0; padding-left: 1.6em; }
+.toc li { margin: 2px 0; }
+.toc li::marker { color: var(--muted); font-size: 14px; }
+.toc li.done > a, .toc li.done > button { color: var(--muted); }
+.toc .ok { color: var(--leaf); font-weight: 600; margin-left: 6px; }
+.toc.mini { margin: 8px 0 4px; font-family: var(--serif); font-size: 16px; }
+.toc.mini a { text-decoration: none; }
+.toc.mini a:hover { text-decoration: underline; text-decoration-color: var(--tc); }
+.toc.mini .more { list-style: none; margin-left: -1.6em; font: 14px var(--ui); }
+.d-body { position: relative; }
+.d-body .toc { background: color-mix(in srgb, var(--tc) 7%, var(--surface)); border-radius: 12px; padding: 10px 16px 12px; margin: 14px 0 6px; max-width: 40em; }
+.d-body .toc .sec-h { margin-top: 0; }
+.d-body .toc button { border: 0; background: none; padding: 3px 0; font: 500 16px/1.5 var(--serif); color: var(--ink); text-align: left; cursor: pointer; }
+.d-body .toc button:hover { text-decoration: underline; text-decoration-color: var(--tc); }
+.chap { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 14px; }
+.chap h3 { font: 600 23px/1.4 var(--serif); margin: 4px 0 10px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.chap h3 .chno { font: 500 13px/1 var(--ui); color: var(--tc); flex-basis: 100%; }
+.chap h3 .edit { margin-left: auto; font-family: var(--ui); }
+.chnav { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 26px 0 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.chnav .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bookdone { color: var(--leaf); font-weight: 500; }
+.bulk-sum .err { color: #C62828; font-weight: 600; }
+.bulklist .sub { margin: 2px 0 0; font-size: 14px; color: var(--muted); font-family: var(--ui); }
+
+/* ---------- ไฮไลต์ในกล่องเนื้อหา (ชั้นหลัง textarea) ---------- */
+.hlwrap { position: relative; background: var(--surface); border-radius: 10px; }
+.hlwrap .textarea { position: relative; z-index: 1; background: transparent; overflow: hidden; resize: none; }
+.hlback { position: absolute; inset: 0; padding: 9px 12px; border: 1px solid transparent; font: 17px/1.85 var(--serif); tab-size: 2; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: transparent; pointer-events: none; overflow: hidden; }
+.hlback mark { color: transparent; background: var(--mark-bg); padding: 0; border-radius: 3px; box-shadow: 0 0 0 2px var(--mark-bg); }
+.hlbtn mark { padding: 0 3px; }
+.hlbar { margin: 0 0 8px; }
+#ed:not(.quote-mode) .qhint { display: none; }
+.bulk-sum.book + .bulklist li { border-left-color: var(--c-หนังสือ); }
+.bulk-sum.book strong { color: var(--c-หนังสือ); }

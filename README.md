@@ -18,7 +18,8 @@
 | `src/backend-supabase.js` | คุยกับ Supabase จริง |
 | `src/backend-demo.js`, `src/demo-data.js` | โหมดทดลอง ข้อมูลตัวอย่างเก็บในเบราว์เซอร์ |
 | `src/styles.css` | สีและหน้าตา |
-| `supabase/schema.sql` | ตาราง สิทธิ์ (RLS) และที่เก็บไฟล์แนบ |
+| `supabase/schema.sql` | ตาราง สิทธิ์ (RLS) และที่เก็บไฟล์แนบ (ติดตั้งใหม่รันไฟล์นี้ไฟล์เดียว) |
+| `supabase/migrations/` | ส่วนที่เพิ่มภายหลัง สำหรับฐานข้อมูลที่รัน schema.sql ไปก่อนแล้ว · `002_books.sql` = หนังสือแบ่งบท |
 | `privacy.html` | นโยบายความเป็นส่วนตัว (Google ต้องใช้ตอน Publish app) |
 | `backup-repo/` | ไฟล์สำหรับ repo backup แบบ private: ping กันพัก + สำรองข้อมูล |
 

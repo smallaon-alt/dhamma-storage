@@ -3,7 +3,7 @@
 import { store, uid } from './util.js';
 import { demoStories, demoTags } from './demo-data.js';
 
-const KEY = 'yom-demo-v2';
+const KEY = 'yom-demo-v3';
 const FILES_KEY = 'yom-demo-files-v1';
 const PEOPLE = [
   { id: 'demo-admin', email: 'admin@example.com', display_name: 'แอดมิน (ทดลอง)', role: 'admin' },
@@ -61,7 +61,8 @@ export default {
   async saveStory(story, { expectUpdatedAt = null, force = false } = {}) {
     const db = load();
     const now = new Date().toISOString();
-    const dup = db.stories.find((s) => !s.deleted_at && s.id !== story.id && s.title.trim().toLowerCase() === story.title.trim().toLowerCase());
+    const k = (x) => `${(x.book || '').trim().toLowerCase()}|${x.title.trim().toLowerCase()}`;
+    const dup = db.stories.find((s) => !s.deleted_at && s.id !== story.id && k(s) === k(story));
     if (dup) throw Object.assign(new Error('ชื่อเรื่องนี้มีอยู่แล้ว ตั้งชื่ออื่น'), { code: 'duplicate' });
     if (!story.id) {
       const row = { ...story, id: uid(), created_at: now, updated_at: now, created_by: db.sessionId, updated_by: db.sessionId, deleted_at: null };
@@ -87,7 +88,7 @@ export default {
   async restoreStory(id) {
     const db = load();
     const s = db.stories.find((x) => x.id === id);
-    if (db.stories.some((x) => !x.deleted_at && x.title === s.title)) throw new Error('ชื่อเรื่องนี้มีอยู่แล้ว ตั้งชื่ออื่น');
+    if (db.stories.some((x) => !x.deleted_at && x.title === s.title && (x.book || '') === (s.book || ''))) throw new Error('ชื่อเรื่องนี้มีอยู่แล้ว ตั้งชื่ออื่น');
     s.deleted_at = null;
     save(db);
   },

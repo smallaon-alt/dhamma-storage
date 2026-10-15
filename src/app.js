@@ -52,6 +52,7 @@ async function refresh() {
   S.profile = profile;
   [S.stories, S.tags] = await Promise.all([S.api.listStories(), S.api.listTags()]);
   S.index = buildIndex(S.stories);
+  S.bookCols = S.stories.some((x) => 'book' in x);   // ฐานข้อมูลรัน 002_books.sql แล้วหรือยัง
   await loadMe();
   S.people = {};
   if (isEditor()) {
@@ -106,6 +107,14 @@ function putRead(id, patch) {
   else saveLocalMe();
 }
 
+// ===================================================================== หนังสือ (แต่ละบท = 1 เรื่องที่มีชื่อเล่มกำกับ)
+const bookOf = (s) => (s.type === 'หนังสือ' && s.book ? s.book : null);
+const byOrder = (a, b) => (a.book_order ?? 1e9) - (b.book_order ?? 1e9) || (a.created_at || '').localeCompare(b.created_at || '');
+const chapters = (name) => S.stories.filter((x) => bookOf(x) === name).sort(byOrder);
+const bookNames = () => [...new Set(S.stories.map(bookOf).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'th'));
+const bookHref = (name) => `#/b/${encodeURIComponent(name)}`;
+const nextOrder = (name) => Math.max(0, ...chapters(name).map((x) => x.book_order || 0)) + 1;
+
 const readInfo = (s) => S.me.reads[s.id] || null;
 const isRead = (s) => !isQuote(s) && !!readInfo(s)?.read_at;
 const isNew = (s) => !readInfo(s) && Date.now() - new Date(s.created_at).getTime() < NEW_DAYS * 864e5;
@@ -129,7 +138,7 @@ function route() {
   const [path, qs] = raw.split('?');
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
   const guard = (ok, fn) => (ok() ? fn() : viewDenied());
-  if (parts[0] !== 's') closeDrawer();
+  if (parts[0] !== 's' && parts[0] !== 'b') closeDrawer();
 
   switch (parts[0]) {
     case undefined:
@@ -139,7 +148,10 @@ function route() {
     case 's':
       if (S.view !== 'search') viewSearch();
       return openDrawer(parts[1]);
-    case 'new': return guard(isEditor, () => viewEditor(null));
+    case 'b':
+      if (S.view !== 'search') viewSearch();
+      return openBook(parts[1]);
+    case 'new': return guard(isEditor, () => viewEditor(null, new URLSearchParams(qs || '')));
     case 'edit': return guard(isEditor, () => viewEditor(parts[1]));
     case 'tags': return guard(isEditor, viewTags);
     case 'trash': return guard(isEditor, viewTrash);
@@ -165,6 +177,7 @@ const ICON = {
   tag: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3" fill="currentColor"/></svg>',
   trash: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
   users: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5M16 4.8a3.5 3.5 0 0 1 0 6.4M18 14.8c1.8.7 3 2.4 3.5 5.2"/></svg>',
+  book: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5C4 4.7 4.7 4 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5zM20 5.5c0-.8-.7-1.5-1.5-1.5H13v16h5.5c.8 0 1.5-.7 1.5-1.5z"/></svg>',
   clip: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="มีไฟล์ต้นฉบับ"><path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L15.5 7"/></svg>',
 };
 
@@ -391,7 +404,21 @@ function renderResults() {
   box.innerHTML = TYPES.map((t) => {
     const items = list.filter((s) => s.type === t);
     if (!items.length) return '';
-    return `<h2 class="group-h" style="${tc(t)}">${t}<small>${items.length} เรื่อง</small></h2>
+    // ไม่ได้พิมพ์ค้น: หนังสือแสดงเป็นเล่ม · พิมพ์ค้น: แสดงบทที่ตรง พร้อมบอกว่ามาจากเล่มไหน
+    if (t === 'หนังสือ' && !q) {
+      const groups = new Map();
+      const loose = [];
+      for (const s of items) {
+        const b = bookOf(s);
+        if (!b) loose.push(s);
+        else if (!groups.has(b)) groups.set(b, [s]);
+        else groups.get(b).push(s);
+      }
+      const n = groups.size + loose.length;
+      return `<h2 class="group-h" style="${tc(t)}">${t}<small>${n} เล่ม</small></h2>
+        <div class="results">${[...groups.keys()].map((b) => bookCard(b, groups.get(b))).join('')}${loose.map((s) => card(s, q, terms)).join('')}</div>`;
+    }
+    return `<h2 class="group-h" style="${tc(t)}">${t}<small>${items.length} ${t === 'หนังสือ' ? 'บท' : 'เรื่อง'}</small></h2>
       <div class="results">${items.map((s) => card(s, q, terms)).join('')}</div>`;
   }).join('');
 }
@@ -423,6 +450,7 @@ function card(s, q, terms) {
     ${title}
     <div class="meta">
       <span class="ttype">${s.type}</span>${s.attachments.length ? ICON.clip : ''}
+      ${bookOf(s) ? bookRef(s) : ''}
       ${s.speakers.map((n) => `<button class="whochip" data-act="who" data-v="${esc(n)}" title="กรองเฉพาะเรื่องของ ${esc(n)}">${esc(n)}</button>`).join('')}
       ${s.source ? `<span>ที่มา: ${esc(s.source)}</span>` : ''}
     </div>
@@ -430,6 +458,35 @@ function card(s, q, terms) {
     ${s.tags.length ? `<div class="chips">${s.tags.map((t) => `<button class="chip" data-act="tag" data-v="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
     <div class="rfoot"><span class="rstat">เพิ่มเมื่อ ${thaiDate(s.created_at)}${readBadge(s)}</span>
       <span class="ract">${favBtn(s)}<a class="btn small" href="${href}">${inProgress(s) ? 'อ่านต่อ' : 'อ่าน'}</a></span></div>
+  </article>`;
+}
+
+function bookRef(s) {
+  const list = chapters(s.book);
+  const i = list.findIndex((x) => x.id === s.id) + 1;
+  return `<a class="bookref" href="${bookHref(s.book)}" title="เปิดอ่านทั้งเล่ม">${ICON.book}${esc(s.book)}<span class="chno">บทที่ ${i}/${list.length}</span></a>`;
+}
+
+// การ์ดหนังสือทั้งเล่ม: สารบัญย่อ + อ่านไปกี่บทแล้ว
+function bookCard(name, shown) {
+  const all = chapters(name);
+  const done = all.filter(isRead).length;
+  const who = [...new Set(all.flatMap((x) => x.speakers))];
+  const tags = [...new Set(all.flatMap((x) => x.tags))];
+  const at = store.get('yom-bookpos', {})[name];
+  const resume = at && all.some((x) => x.id === at) && done < all.length;
+  const SHOW = 5;
+  const pct = all.length ? Math.round((done / all.length) * 100) : 0;
+  return `<article class="result bookcard ${done === all.length ? 'is-read' : ''}" style="${tc('หนังสือ')}">
+    <h3><a href="${bookHref(name)}">${all.some(isNew) ? '<span class="badge-new">ใหม่</span> ' : ''}${esc(name)}</a></h3>
+    <div class="meta"><span class="ttype">หนังสือ</span><span>${all.length} บท</span>
+      ${who.map((n) => `<button class="whochip" data-act="who" data-v="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+    <ol class="toc mini">${all.slice(0, SHOW).map((x) => `<li class="${isRead(x) ? 'done' : ''}"><a href="#/s/${encodeURIComponent(x.id)}">${esc(x.title)}</a>${isRead(x) ? ' <span class="ok">✓</span>' : ''}</li>`).join('')}
+      ${all.length > SHOW ? `<li class="more"><a href="${bookHref(name)}">และอีก ${all.length - SHOW} บท</a></li>` : ''}</ol>
+    ${shown.length < all.length ? `<p class="hint">ตรงกับตัวกรอง ${shown.length} บท</p>` : ''}
+    ${tags.length ? `<div class="chips">${tags.map((t) => `<button class="chip" data-act="tag" data-v="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
+    <div class="rfoot"><span class="rstat">${done ? `<span class="rd ${done === all.length ? 'done' : 'prog'}">${done === all.length ? '✓ อ่านครบทั้งเล่ม' : `<span class="bar" style="--p:${pct}%"></span>อ่านแล้ว ${done}/${all.length} บท`}</span>` : `เพิ่มเมื่อ ${thaiDate(all[0]?.created_at)}`}</span>
+      <span class="ract"><a class="btn small" href="${bookHref(name)}">${resume ? 'อ่านต่อ' : 'อ่านทั้งเล่ม'}</a></span></div>
   </article>`;
 }
 
@@ -474,8 +531,14 @@ function openDrawer(id) {
   renderRecent();
 
   const quote = s.type === 'คำคม';
-  const gems = !quote && s.highlights.length
-    ? `<aside class="gems"><h3>ประโยคเด็ด</h3>${s.highlights.map((h) => `<p>${esc(h)}</p>`).join('')}</aside>` : '';
+  const book = bookOf(s);
+  const chs = book ? chapters(book) : [];
+  const ci = chs.findIndex((x) => x.id === s.id);
+  const chnav = book ? `<nav class="chnav" aria-label="บทในเล่ม">
+      ${ci > 0 ? `<a class="btn" href="#/s/${encodeURIComponent(chs[ci - 1].id)}">‹ ${esc(chs[ci - 1].title)}</a>` : '<span></span>'}
+      <a class="btn" href="${bookHref(book)}">${ICON.book} ทั้งเล่ม</a>
+      ${ci < chs.length - 1 ? `<a class="btn primary" href="#/s/${encodeURIComponent(chs[ci + 1].id)}">${esc(chs[ci + 1].title)} ›</a>` : '<span></span>'}
+    </nav>` : '';
   const files = s.attachments.length ? `<div class="atts">${s.attachments.map((p) => isPdf(p)
     ? `<a class="btn" href="${esc(S.api.fileUrl(p))}" target="_blank" rel="noopener">ดูไฟล์ต้นฉบับ (PDF)</a>`
     : `<img src="${esc(S.api.fileUrl(p))}" alt="ภาพต้นฉบับของ ${esc(s.title)}" loading="lazy">`).join('')}</div>` : '';
@@ -499,15 +562,15 @@ function openDrawer(id) {
     </div>
     <div class="d-body">
       ${resumeAt ? `<button class="resume" data-act="resume" data-v="${resumeAt}">อ่านต่อจากที่ค้างไว้ <strong>${resumeAt}%</strong> ↓</button>` : ''}
-      <div class="meta"><span class="ttype">${s.type}</span>${s.status === 'draft' ? '<span class="badge-draft">ร่าง ยังไม่เผยแพร่</span>' : ''}
+      <div class="meta"><span class="ttype">${s.type}</span>${book ? bookRef(s) : ''}${s.status === 'draft' ? '<span class="badge-draft">ร่าง ยังไม่เผยแพร่</span>' : ''}
         ${s.speakers.map((n) => `<a class="whochip" href="#/?who=${encodeURIComponent(n)}" title="ดูเรื่องทั้งหมดของ ${esc(n)}">${esc(n)}</a>`).join('')}
         ${s.source ? `<span>ที่มา: ${esc(s.source)}</span>` : ''}
         <span>เพิ่มเมื่อ ${thaiDate(s.created_at)}</span>
       </div>
       <h2 id="d-title" class="${quote ? 'sr-only' : ''}">${esc(s.title)}</h2>
-      ${gems}
       <div class="reading ${quote ? 'quote' : ''}">${bodyHtml(s)}</div>
       ${files}
+      ${chnav}
       ${s.tags.length ? `<div class="sec-h">แท็ก</div><div class="chips">${s.tags.map((t) => `<a class="chip" href="#/?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join('')}</div>` : ''}
       ${by}
       ${rel.length ? `<div class="sec-h">เรื่องที่เกี่ยวข้อง</div><ul class="related">${rel.map((r) =>
@@ -517,6 +580,106 @@ function openDrawer(id) {
   body.scrollTop = 0;
   d.querySelector('[data-act="close"]').focus({ preventScroll: true });
   trackReading(s, body);
+}
+
+// ---- อ่านทั้งเล่ม: สารบัญ + ทุกบทต่อกัน · จำบทล่าสุดที่อ่านถึง · บทที่เลื่อนผ่านจนจบ = อ่านแล้ว
+function openBook(name) {
+  flushPos();
+  const key = 'b:' + name;
+  if (S.stack.at(-2) === key) S.stack.pop();
+  else { if (!S.stack.length) S.stackFromApp = S.inApp > 0; S.stack.push(key); }
+  let d = document.querySelector('.drawer');
+  if (!d) {
+    document.body.insertAdjacentHTML('beforeend', '<div class="scrim" data-act="close"></div><section class="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title"></section>');
+    d = document.querySelector('.drawer');
+    document.body.classList.add('locked');
+  }
+  const list = chapters(name);
+  d.style.cssText = tc('หนังสือ');
+  if (!list.length) {
+    d.innerHTML = `<div class="d-head"><span class="spacer"></span><button class="btn small" data-act="close">ปิด ✕</button></div>
+      <div class="d-body"><div class="empty"><strong id="d-title">ไม่พบหนังสือเล่มนี้</strong>อาจถูกย้ายไปถังขยะ หรือยังไม่เผยแพร่</div></div>`;
+    return;
+  }
+  const who = [...new Set(list.flatMap((x) => x.speakers))];
+  const tags = [...new Set(list.flatMap((x) => x.tags))];
+  const done = list.filter(isRead).length;
+  const at = store.get('yom-bookpos', {})[name];
+  const atCh = at && at !== list[0].id ? list.find((x) => x.id === at) : null;
+  d.innerHTML = `
+    <div class="d-head">
+      ${S.stack.length > 1 ? '<button class="btn small" data-act="dback">‹ กลับ</button>' : ''}
+      <span class="spacer"></span>
+      <button class="btn small" data-act="font" data-v="-2" aria-label="ตัวอักษรเล็กลง">ก−</button>
+      <button class="btn small" data-act="font" data-v="2" aria-label="ตัวอักษรใหญ่ขึ้น">ก+</button>
+      ${isEditor() ? `<a class="btn small" href="#/new?book=${encodeURIComponent(name)}">+ เพิ่มบท</a>` : ''}
+      <button class="btn small" data-act="close" aria-label="ปิด">ปิด ✕</button>
+      <div class="d-prog" aria-hidden="true"><span></span></div>
+    </div>
+    <div class="d-body">
+      ${atCh ? `<button class="resume" data-act="goch" data-v="${esc(atCh.id)}">อ่านต่อจากบท <strong>${esc(atCh.title)}</strong> ↓</button>` : ''}
+      <div class="meta"><span class="ttype">หนังสือ</span><span>${list.length} บท</span>
+        ${who.map((n) => `<a class="whochip" href="#/?who=${encodeURIComponent(n)}">${esc(n)}</a>`).join('')}
+        <span class="bookdone">${done ? `อ่านแล้ว ${done}/${list.length} บท` : ''}</span></div>
+      <h2 id="d-title">${esc(name)}</h2>
+      <nav class="toc" aria-label="สารบัญ"><div class="sec-h">สารบัญ</div><ol>
+        ${list.map((x) => `<li class="${isRead(x) ? 'done' : ''}" data-toc="${esc(x.id)}"><button data-act="goch" data-v="${esc(x.id)}">${esc(x.title)}</button><span class="ok">${isRead(x) ? '✓' : ''}</span></li>`).join('')}
+      </ol></nav>
+      ${list.map((x, i) => `<section class="chap" id="ch-${esc(x.id)}" data-id="${esc(x.id)}">
+        <h3><span class="chno">บทที่ ${i + 1}</span>${esc(x.title)}${x.status === 'draft' ? ' <span class="badge-draft">ร่าง</span>' : ''}
+          ${isEditor() ? `<a class="btn small edit" href="#/edit/${encodeURIComponent(x.id)}">แก้ไข</a>` : ''}</h3>
+        <div class="reading">${bodyHtml(x)}</div>
+        ${x.attachments.length ? `<div class="atts">${x.attachments.map((p) => isPdf(p)
+          ? `<a class="btn" href="${esc(S.api.fileUrl(p))}" target="_blank" rel="noopener">ดูไฟล์ต้นฉบับ (PDF)</a>`
+          : `<img src="${esc(S.api.fileUrl(p))}" alt="ภาพต้นฉบับของ ${esc(x.title)}" loading="lazy">`).join('')}</div>` : ''}
+        ${x.source ? `<p class="byline">ที่มา: ${esc(x.source)}</p>` : ''}
+      </section>`).join('')}
+      ${tags.length ? `<div class="sec-h">แท็ก</div><div class="chips">${tags.map((t) => `<a class="chip" href="#/?tag=${encodeURIComponent(t)}">${esc(t)}</a>`).join('')}</div>` : ''}
+    </div>`;
+  const body = d.querySelector('.d-body');
+  body.scrollTop = 0;
+  d.querySelector('[data-act="close"]').focus({ preventScroll: true });
+  trackBook(name, list, body);
+}
+
+function trackBook(name, list, body) {
+  S.rd = { id: null, pos: null, book: name };
+  const bar = document.querySelector('.d-prog span');
+  const secs = [...body.querySelectorAll('.chap')];
+  let t;
+  const check = () => {
+    const max = body.scrollHeight - body.clientHeight;
+    if (bar) bar.style.width = (max <= 0 ? 100 : Math.round((body.scrollTop / max) * 100)) + '%';
+    const top = body.getBoundingClientRect().top;
+    const bottom = top + body.clientHeight;
+    let cur = null;
+    for (const sec of secs) {
+      const r = sec.getBoundingClientRect();
+      if (r.top <= top + 120) cur = sec.dataset.id;
+      // เลื่อนจนเห็นท้ายบท = อ่านบทนั้นแล้ว
+      if (r.bottom <= bottom + 4 && r.bottom > top) {
+        const s = list.find((x) => x.id === sec.dataset.id);
+        if (s && !isRead(s)) {
+          putRead(s.id, { position: 100, read_at: new Date().toISOString() });
+          const li = body.querySelector(`[data-toc="${CSS.escape(s.id)}"]`);
+          if (li) { li.classList.add('done'); li.querySelector('.ok').textContent = '✓'; }
+          const n = list.filter(isRead).length;
+          body.querySelector('.bookdone').textContent = `อ่านแล้ว ${n}/${list.length} บท`;
+        }
+      }
+    }
+    if (max > 0 && body.scrollTop >= max - 4) {   // เลื่อนสุดแล้ว = บทสุดท้ายที่โผล่บนจอ
+      const vis = secs.filter((x) => x.getBoundingClientRect().top < bottom);
+      if (vis.length) cur = vis.at(-1).dataset.id;
+    }
+    if (cur) {
+      clearTimeout(t);
+      t = setTimeout(() => store.set('yom-bookpos', { ...store.get('yom-bookpos', {}), [name]: cur }), 600);
+    }
+  };
+  body.addEventListener('scroll', check, { passive: true });
+  // เปิดเล่มแล้ว = บทในเล่มไม่ใช่ "ใหม่" อีก
+  for (const x of list) if (!readInfo(x)) putRead(x.id, { position: 0, read_at: null });
 }
 
 // ---- ติดตามการอ่านในหน้าต่างอ่าน
@@ -597,7 +760,7 @@ function bodyHtml(s) {
 
 function related(s) {
   return S.stories
-    .filter((x) => x.id !== s.id)
+    .filter((x) => x.id !== s.id && (!bookOf(s) || bookOf(x) !== bookOf(s)))
     .map((x) => ({ x, n: x.tags.filter((t) => s.tags.includes(t)).length * 2 + x.speakers.filter((p) => s.speakers.includes(p)).length }))
     .filter((r) => r.n > 0)
     .sort((a, b) => b.n - a.n)
@@ -612,20 +775,29 @@ function setRead(px) {
 }
 
 // ===================================================================== เพิ่ม / แก้ไขเรื่อง (ตามแท็บเพิ่มข้อมูลของแอป)
-const whoLabel = (type) => (type === 'โอวาท' ? 'ผู้ให้โอวาท' : 'ผู้กล่าว / แหล่ง');
+const whoLabel = (type) => (type === 'โอวาท' ? 'ผู้ให้โอวาท' : type === 'หนังสือ' ? 'ผู้เขียน / ผู้แสดงธรรม' : 'ผู้กล่าว / แหล่ง');
 
-function viewEditor(id) {
+function viewEditor(id, params = new URLSearchParams()) {
   const s = id ? S.stories.find((x) => x.id === id) : null;
   if (id && !s) { location.hash = '#/'; return; }
   S.view = 'editor';
   S.ed = s ? {
     id: s.id, type: s.type, title: s.title, body: s.body, highlights: [...s.highlights], tags: [...s.tags],
     speakers: [...s.speakers], source: s.source, attachments: [...s.attachments], status: s.status,
+    book: s.book || '', book_order: s.book_order ?? '',
     expect: s.updated_at, pending: [],
   } : {
     id: null, type: store.get('yom-last-type', 'เรื่องเล่า'), title: '', body: '', highlights: [], tags: [], speakers: [],
     source: '', attachments: [], status: 'published', expect: null, pending: [],
+    book: '', book_order: '',
   };
+  // มาจากปุ่ม "+ เพิ่มบท" ในหน้าหนังสือ
+  const pb = params.get('book');
+  if (!s && pb) {
+    const first = chapters(pb)[0];
+    Object.assign(S.ed, { type: 'หนังสือ', book: pb, book_order: nextOrder(pb), speakers: first ? [...first.speakers] : [], tags: [] });
+  }
+  S.ed.orderAuto = !s;
   S.ed.bulk = false;
   S.ed.split = store.get('yom-bulk-split', 'blank');
 
@@ -636,29 +808,37 @@ function viewEditor(id) {
         <div class="field"><span class="label" id="lbl-type">ประเภท</span>
           <div class="seg typesel typepick" id="ed-type" role="radiogroup" aria-labelledby="lbl-type"></div></div>
 
-        ${s ? '' : `<div class="field only-quote">
-          <span class="label" id="lbl-bulk">เพิ่มคำคม</span>
+        <div class="field only-book bookrow">
+          <div class="grow"><label for="ed-book">ชื่อหนังสือ <span class="hint">พิมพ์ชื่อเล่มเดิมเพื่อเพิ่มบทต่อ หรือชื่อใหม่เพื่อเริ่มเล่มใหม่</span></label>
+            <input class="input" id="ed-book" list="book-list" value="${esc(S.ed.book)}" autocomplete="off">
+            <datalist id="book-list">${bookNames().map((b) => `<option value="${esc(b)}">`).join('')}</datalist></div>
+          <div data-nobulk><label for="ed-order">บทที่</label>
+            <input class="input order" id="ed-order" type="number" min="1" inputmode="numeric" value="${esc(S.ed.book_order)}"></div>
+        </div>
+        <p class="hint only-book" id="book-hint"></p>
+
+        ${s ? '' : `<div class="field only-multi">
+          <span class="label" id="lbl-bulk">วิธีเพิ่ม</span>
           <div class="seg pick" id="ed-bulk" role="radiogroup" aria-labelledby="lbl-bulk"></div>
         </div>`}
 
         <div class="field" id="f-title" data-nobulk>
-          <label for="ed-title">ชื่อเรื่อง <span class="hint" id="title-hint"></span></label>
+          <label for="ed-title"><span id="title-label">ชื่อเรื่อง</span> <span class="hint" id="title-hint"></span></label>
           <input class="input" id="ed-title" value="${esc(S.ed.title)}" autocomplete="off">
         </div>
 
         <div class="field">
           <label for="ed-body" id="body-label">เนื้อหา <span class="hint">กด Tab เพื่อย่อหน้า</span></label>
-          <div class="bulkopt only-bulk">
+          <div class="bulkopt only-bulk only-quote">
             <span class="hint">แยกคำคมด้วย</span>
             <div class="seg" id="ed-split" role="radiogroup" aria-label="วิธีแยกคำคม"></div>
           </div>
-          <textarea class="textarea" id="ed-body">${esc(S.ed.body)}</textarea>
-          <div class="only-bulk" id="bulk-prev" aria-live="polite"></div>
-          <div class="sugg" data-nobulk>
-            <button type="button" class="btn small" data-act="gem-add">ไฮไลต์ประโยคที่เลือก</button>
-            <span class="hint">ลากเลือกประโยคเด็ดในกล่องเนื้อหาก่อน แล้วกดปุ่มนี้</span>
+          <div class="sugg hlbar" data-nobulk>
+            <button type="button" class="btn small hlbtn" data-act="gem-add"><mark>ไฮไลต์</mark> / เอาออก</button>
+            <span class="hint" id="hl-hint">ลากเลือกประโยคแล้วกดปุ่ม · วางเคอร์เซอร์ในข้อความที่ไฮไลต์แล้วกด = เอาออก</span>
           </div>
-          <ul class="gemlist" id="ed-gems" data-nobulk></ul>
+          <div class="hlwrap"><div class="hlback" id="ed-hl" aria-hidden="true"></div><textarea class="textarea" id="ed-body">${esc(S.ed.body)}</textarea></div>
+          <div class="only-bulk" id="bulk-prev" aria-live="polite"></div>
         </div>
 
         <div class="field">
@@ -670,7 +850,7 @@ function viewEditor(id) {
         </div>
 
         <div class="field">
-          <label for="ed-sp-in"><span id="sp-label">${whoLabel(S.ed.type)}</span> <span class="hint only-bulk">ใช้กับคำคมที่ไม่ได้ระบุชื่อท้ายข้อความ</span></label>
+          <label for="ed-sp-in"><span id="sp-label">${whoLabel(S.ed.type)}</span> <span class="hint only-bulk qhint">ใช้กับคำคมที่ไม่ได้ระบุชื่อท้ายข้อความ</span></label>
           <div class="tokbox"><span id="ed-sp" style="display:contents"></span>
             <input id="ed-sp-in" list="sp-list" placeholder="พิมพ์ชื่อแล้วกด Enter ใส่ได้หลายชื่อ" autocomplete="off"></div>
           <datalist id="sp-list">${countBy(S.stories, (x) => x.speakers).map(([n]) => `<option value="${esc(n)}">`).join('')}</datalist>
@@ -709,11 +889,18 @@ function viewEditor(id) {
   const dirty = () => { S.dirty = true; };
   $('ed-title').addEventListener('input', (e) => { S.ed.title = e.target.value; dirty(); });
   $('ed-source').addEventListener('input', (e) => { S.ed.source = e.target.value; dirty(); });
+  $('ed-book').addEventListener('input', (e) => {
+    S.ed.book = e.target.value; dirty();
+    if (S.ed.orderAuto) { S.ed.book_order = S.ed.book.trim() ? nextOrder(S.ed.book.trim()) : ''; $('ed-order').value = S.ed.book_order; }
+    edBookHint(); edBulkPreview();
+  });
+  $('ed-order').addEventListener('input', (e) => { S.ed.book_order = e.target.value; S.ed.orderAuto = false; dirty(); edBookHint(); });
   const body = $('ed-body');
   let tt;
   body.addEventListener('input', () => {
     S.ed.body = body.value; dirty();
-    clearTimeout(tt); tt = setTimeout(() => { edTags(); edGems(); edBulkPreview(); }, 250);
+    edGems(); growBody();
+    clearTimeout(tt); tt = setTimeout(() => { if (S.view === 'editor') { edTags(); edBulkPreview(); } }, 250);
   });
   body.addEventListener('keydown', onTabIndent);
   tokInput($('ed-tag-in'), 'tags', edTags);
@@ -733,20 +920,55 @@ function viewEditor(id) {
     dirty(); edFiles();
   });
 
-  edType(); edGems(); edTags(); edSpeakers(); edFiles(); edStatus();
+  edType(); edGems(); edTags(); edSpeakers(); edFiles(); edStatus(); edBookHint();
+  growBody();
+}
+
+// กล่องเนื้อหายืดตามข้อความ (ไม่มีแถบเลื่อนในกล่อง) ไฮไลต์ด้านหลังจึงตรงกับตัวอักษรเสมอ
+function growBody() {
+  const ta = document.getElementById('ed-body');
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.max(S.ed.bulk ? 240 : 260, ta.scrollHeight + 2) + 'px';
+}
+
+function edBookHint() {
+  const el = document.getElementById('book-hint');
+  if (!el) return;
+  const b = S.ed.book.trim();
+  const list = b ? chapters(b).filter((x) => x.id !== S.ed.id) : [];
+  el.innerHTML = !b ? 'ไม่ใส่ชื่อหนังสือ = เป็นเรื่องเดี่ยว ไม่อยู่ในเล่มไหน'
+    : list.length ? `เล่มนี้มีอยู่แล้ว ${list.length} บท: ${list.map((x) => esc(x.title)).slice(0, 6).join(' · ')}${list.length > 6 ? ' …' : ''}`
+      : 'หนังสือเล่มใหม่';
 }
 
 // ---- เพิ่มคำคมทีละหลายอัน
 function edBulk() {
   const box = document.getElementById('ed-bulk');
   const form = document.getElementById('ed');
-  if (S.ed.type !== 'คำคม') S.ed.bulk = false;
-  form.classList.toggle('quote-mode', S.ed.type === 'คำคม' && !S.ed.id);
+  const t = S.ed.type;
+  const multi = t === 'คำคม' || t === 'หนังสือ';
+  if (!multi) S.ed.bulk = false;
+  form.classList.toggle('quote-mode', t === 'คำคม');
+  form.classList.toggle('multi-mode', multi && !S.ed.id);
   form.classList.toggle('bulk', S.ed.bulk);
+  growBody();
   if (!box) return;
+  const [one, many] = t === 'หนังสือ' ? ['ทีละบท', 'วางทั้งเล่ม'] : ['ทีละอัน', 'ทีละหลายอัน'];
   box.innerHTML = `
-    <button type="button" role="radio" data-act="ed-bulk" data-v="one" aria-pressed="${!S.ed.bulk}" aria-checked="${!S.ed.bulk}">ทีละอัน</button>
-    <button type="button" role="radio" data-act="ed-bulk" data-v="many" aria-pressed="${S.ed.bulk}" aria-checked="${S.ed.bulk}">ทีละหลายอัน</button>`;
+    <button type="button" role="radio" data-act="ed-bulk" data-v="one" aria-pressed="${!S.ed.bulk}" aria-checked="${!S.ed.bulk}">${one}</button>
+    <button type="button" role="radio" data-act="ed-bulk" data-v="many" aria-pressed="${S.ed.bulk}" aria-checked="${S.ed.bulk}">${many}</button>`;
+  if (t === 'หนังสือ') {
+    document.getElementById('body-label').innerHTML = S.ed.bulk
+      ? 'วางเนื้อหาทั้งเล่ม <span class="hint">ขึ้นบรรทัดใหม่ด้วย # หรือ “บทที่ …” = เริ่มบทใหม่ บรรทัดนั้นเป็นชื่อบท</span>'
+      : 'เนื้อหา <span class="hint">กด Tab เพื่อย่อหน้า</span>';
+    document.getElementById('ed-body').placeholder = S.ed.bulk
+      ? '# คำนำ\nหนังสือเล่มนี้…\n\n# บทที่ 1 เริ่มต้นนั่งสมาธิ\nการนั่งสมาธิไม่จำเป็นต้อง…\n\nบทที่ 2 แผ่เมตตาก่อนนอน\nก่อนหลับ ลองนึกถึง…'
+      : '';
+    document.getElementById('ed-save').textContent = S.ed.bulk ? 'บันทึกทุกบท' : 'บันทึกลงคลัง';
+    edBulkPreview();
+    return;
+  }
   document.getElementById('ed-split').innerHTML = [['blank', 'บรรทัดว่าง'], ['line', 'ขึ้นบรรทัดใหม่']].map(([v, l]) =>
     `<button type="button" role="radio" data-act="ed-split" data-v="${v}" aria-pressed="${S.ed.split === v}" aria-checked="${S.ed.split === v}">${l}</button>`).join('');
   document.getElementById('body-label').innerHTML = S.ed.bulk
@@ -785,9 +1007,53 @@ function parseBulk(text, mode) {
   return out;
 }
 
+// วางทั้งเล่ม: บรรทัดที่ขึ้นต้นด้วย # หรือ "บทที่/ตอนที่ …" = หัวบทใหม่ · ข้อความก่อนบทแรก = คำนำ
+const HEAD_RE = /^\s*(#{1,6}\s*(.+)|((?:บทที่|ตอนที่|บท)\s*[0-9๐-๙]+.*))$/;
+function parseBook(text) {
+  const out = [];
+  let cur = null;
+  for (const line of text.split('\n')) {
+    const m = line.match(HEAD_RE);
+    if (m) {
+      // "บทที่ 1 ตึงไปก็ขาด" → ชื่อบท "ตึงไปก็ขาด" (เลขบทระบบใส่ให้เอง)
+      const raw = (m[2] || m[3]).trim();
+      const rest = raw.replace(/^(?:บทที่|ตอนที่|บท)\s*[0-9๐-๙]+\s*[.:–—-]?\s*/, '');
+      cur = { title: rest || raw, lines: [] };
+      out.push(cur);
+    } else {
+      if (!cur) { if (!line.trim()) continue; cur = { title: 'คำนำ', lines: [] }; out.push(cur); }
+      cur.lines.push(line);
+    }
+  }
+  return out.map((c) => ({ title: c.title, body: c.lines.join('\n').replace(/^\s*\n|\s+$/g, '') }))
+    .filter((c) => c.title && c.body.trim());
+}
+
+function bookPreview(box) {
+  const b = S.ed.book.trim();
+  const have = new Set(b ? chapters(b).map((x) => norm(x.title)) : []);
+  const items = parseBook(S.ed.body);
+  let order = b ? nextOrder(b) : 1;
+  let dup = 0;
+  const rows = items.map((it) => {
+    const isDup = have.has(norm(it.title));
+    have.add(norm(it.title));
+    if (isDup) dup++;
+    const no = isDup ? '–' : order++;
+    const brief = it.body.replace(/\s+/g, ' ').slice(0, 110);
+    return `<li class="${isDup ? 'dup' : ''}"><span class="no">${no}</span><div class="grow"><strong>${esc(it.title)}</strong>
+      <p class="sub">${esc(brief)}${it.body.length > 110 ? '…' : ''} <span class="hint">(${it.body.length.toLocaleString('th-TH')} ตัวอักษร)</span></p>
+      ${isDup ? '<span class="hint">มีบทชื่อนี้ในเล่มแล้ว จะข้าม</span>' : ''}</div></li>`;
+  });
+  box.innerHTML = items.length
+    ? `<div class="bulk-sum book">${b ? `เล่ม “${esc(b)}” · ` : '<span class="err">ใส่ชื่อหนังสือด้านบนก่อน</span> · '}จะเพิ่ม <strong>${items.length - dup}</strong> บท${dup ? ` · ข้าม ${dup} ที่ซ้ำ` : ''}</div><ol class="bulklist">${rows.join('')}</ol>`
+    : '<p class="hint">วางเนื้อหาแล้ว ตัวอย่างการแบ่งบทจะขึ้นตรงนี้</p>';
+}
+
 function edBulkPreview() {
   const box = document.getElementById('bulk-prev');
   if (!box || !S.ed.bulk) return;
+  if (S.ed.type === 'หนังสือ') return bookPreview(box);
   const items = parseBulk(S.ed.body, S.ed.split);
   const have = new Set(S.stories.filter(isQuote).map((x) => norm(x.body)));
   let dup = 0;
@@ -808,8 +1074,50 @@ function edBulkPreview() {
     : '<p class="hint">วางข้อความแล้ว ตัวอย่างการแยกจะขึ้นตรงนี้</p>';
 }
 
+async function saveBookBulk() {
+  const ed = S.ed;
+  const btn = document.getElementById('ed-save');
+  const book = ed.book.trim();
+  if (!book) return toast('ใส่ชื่อหนังสือก่อน', true);
+  const have = new Set(chapters(book).map((x) => norm(x.title)));
+  const items = parseBook(ed.body).filter((it) => { const k = norm(it.title); if (have.has(k)) return false; have.add(k); return true; });
+  if (!items.length) return toast('ไม่มีบทใหม่ให้บันทึก', true);
+  btn.disabled = true;
+  let done = 0;
+  let order = nextOrder(book);
+  try {
+    for (const it of items) {
+      btn.textContent = `กำลังบันทึก ${done + 1}/${items.length}…`;
+      await S.api.saveStory({
+        id: null, type: 'หนังสือ', title: it.title, body: it.body, highlights: [], tags: ed.tags, speakers: ed.speakers,
+        source: ed.source.trim(), attachments: [], status: ed.status, book, book_order: order++,
+      });
+      done++;
+    }
+    for (const t of ed.tags) if (!S.tags.some((x) => x.name === t)) await S.api.saveTag({ name: t, synonyms: [], is_standard: false, sort: 900 });
+    store.set('yom-last-type', 'หนังสือ');
+    S.dirty = false;
+    await refresh();
+    S.view = '';
+    toast(`บันทึก ${done} บทลงเล่ม “${book}” แล้ว`);
+    location.hash = bookHref(book);
+  } catch (err) {
+    toast(done ? `บันทึกได้ ${done} จาก ${items.length} บท: ${err.message}` : err.message, true);
+    if (done) {
+      await refresh();
+      const left = items.slice(done).map((it) => `# ${it.title}\n${it.body}`).join('\n\n');
+      ed.body = left;
+      document.getElementById('ed-body').value = left;
+      edBulk();
+    }
+    btn.disabled = false;
+    btn.textContent = 'บันทึกทุกบท';
+  }
+}
+
 async function saveBulk() {
   const ed = S.ed;
+  if (ed.type === 'หนังสือ') return saveBookBulk();
   const btn = document.getElementById('ed-save');
   const have = new Set(S.stories.filter(isQuote).map((x) => norm(x.body)));
   const items = parseBulk(ed.body, ed.split).filter((it) => {
@@ -867,14 +1175,22 @@ function edType() {
     `<button type="button" role="radio" class="tsel" style="${tc(x)}" data-act="ed-type" data-v="${x}" aria-pressed="${x === t}" aria-checked="${x === t}">${x}</button>`).join('');
   const optional = t === 'คำคม' || t === 'โอวาท';
   document.getElementById('title-hint').textContent = optional ? 'ไม่ใส่ก็ได้ ระบบตั้งชื่อจากข้อความให้' : '';
+  document.getElementById('title-label').textContent = t === 'หนังสือ' ? 'ชื่อบท / หัวข้อ' : 'ชื่อเรื่อง';
+  document.getElementById('ed').classList.toggle('book-mode', t === 'หนังสือ');
   document.getElementById('sp-label').textContent = whoLabel(t);
   edBulk();
 }
 
+// ไฮไลต์แสดงในกล่องเนื้อหาเลย: ชั้นด้านหลัง textarea วาดแถบสีตรงตำแหน่งข้อความ
 function edGems() {
-  document.getElementById('ed-gems').innerHTML = S.ed.highlights.map((h, i) => `<li>
-    <span>${esc(h)}${S.ed.body.includes(h) ? '' : ' <em class="hint">(ไม่พบในเนื้อหาแล้ว จะถูกตัดออกตอนบันทึก)</em>'}</span>
-    <button type="button" class="btn small" data-act="gem-rm" data-v="${i}" aria-label="เอาไฮไลต์นี้ออก">เอาออก</button></li>`).join('');
+  const back = document.getElementById('ed-hl');
+  if (!back) return;
+  const live = S.ed.highlights.filter((h) => S.ed.body.includes(h));   // ที่หายจากเนื้อหาจะถูกตัดตอนบันทึก
+  back.innerHTML = bodyHtml({ body: S.ed.body, highlights: live }) + '\n ';
+  const n = live.length;
+  document.getElementById('hl-hint').textContent = n
+    ? `ไฮไลต์ไว้ ${n} ประโยค · วางเคอร์เซอร์ในข้อความที่ไฮไลต์แล้วกดปุ่ม = เอาออก`
+    : 'ลากเลือกประโยคเด็ดแล้วกดปุ่ม · ประโยคที่ไฮไลต์จะขึ้นเป็นข้อความย่อบนการ์ดด้วย';
 }
 
 const tokHtml = (k, list, cls = '') => list.map((t) =>
@@ -983,6 +1299,10 @@ async function saveEditor(force = false) {
       highlights: ed.highlights.filter((h) => ed.body.includes(h)),
       tags: ed.tags, speakers: ed.speakers, source: ed.source.trim(), attachments: ed.attachments, status: ed.status,
     };
+    // ช่องหนังสือ: ส่งเมื่อเป็นบทของหนังสือ หรือเมื่อฐานข้อมูลรองรับแล้ว (จะได้ล้างค่าเมื่อเปลี่ยนประเภท)
+    const book = ed.type === 'หนังสือ' ? ed.book.trim() : '';
+    if (book) { data.book = book; data.book_order = Number(ed.book_order) || nextOrder(book); }
+    else if (S.bookCols) { data.book = null; data.book_order = null; }
     let saved;
     try {
       saved = await S.api.saveStory(data, { expectUpdatedAt: ed.expect, force });
@@ -1003,7 +1323,9 @@ async function saveEditor(force = false) {
     toast(saved.status === 'published' ? 'บันทึกลงคลังแล้ว โยมเห็นได้ทันที' : 'บันทึกเป็นร่างแล้ว');
     location.hash = `#/s/${encodeURIComponent(saved.id)}`;
   } catch (err) {
-    if (err.code === 'conflict') {
+    if (err.code === 'duplicate' && ed.type === 'หนังสือ' && ed.book.trim()) {
+      toast(`เล่มนี้มีบทชื่อ “${title}” แล้ว ตั้งชื่อบทอื่น`, true);
+    } else if (err.code === 'conflict') {
       const when = err.current ? ` (แก้ล่าสุด ${thaiDate(err.current.updated_at)})` : '';
       if (confirm(`เรื่องนี้ถูกแก้จากเครื่องอื่นหลังจากคุณเปิดฟอร์ม${when}\nกด OK เพื่อบันทึกทับด้วยฉบับของคุณ หรือ Cancel เพื่อกลับไปตรวจก่อน`)) {
         btn.disabled = false; btn.textContent = label;
@@ -1140,6 +1462,13 @@ const actions = {
     updateReadBtn(s);
     refreshCards();
   },
+  goch(el) {
+    const body = document.querySelector('.d-body');
+    const sec = document.getElementById('ch-' + el.dataset.v);
+    if (!body || !sec) return;
+    body.scrollTo({ top: sec.offsetTop - 8, behavior: 'smooth' });
+    if (el.classList.contains('resume')) el.remove();
+  },
   resume(el) {
     const body = document.querySelector('.d-body');
     const max = body.scrollHeight - body.clientHeight;
@@ -1165,14 +1494,27 @@ const actions = {
     S.ed[k] = S.ed[k].filter((x) => x !== el.dataset.v);
     S.dirty = true; k === 'tags' ? edTags() : edSpeakers();
   },
+  // เลือกข้อความแล้วกด = ไฮไลต์ · เคอร์เซอร์/ที่เลือกทับไฮไลต์เดิม = เอาออก
   'gem-add'() {
     const ta = document.getElementById('ed-body');
-    const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd).trim();
-    if (!sel) return toast('ลากเลือกข้อความในกล่องเนื้อหาก่อน', true);
-    if (!S.ed.highlights.includes(sel)) S.ed.highlights.push(sel);
+    const { selectionStart: a, selectionEnd: b, value } = ta;
+    const spans = [];
+    for (const h of S.ed.highlights) {
+      let i = value.indexOf(h);
+      while (i !== -1) { spans.push({ h, a: i, b: i + h.length }); i = value.indexOf(h, i + 1); }
+    }
+    const hit = spans.filter((x) => (a === b ? a >= x.a && a <= x.b : a < x.b && b > x.a)).map((x) => x.h);
+    if (hit.length) {
+      S.ed.highlights = S.ed.highlights.filter((h) => !hit.includes(h));
+      toast('เอาไฮไลต์ออกแล้ว');
+    } else {
+      const sel = value.slice(a, b).trim();
+      if (!sel) return toast('ลากเลือกประโยคในกล่องเนื้อหาก่อน', true);
+      S.ed.highlights.push(sel);
+    }
     S.dirty = true; edGems();
+    ta.focus();
   },
-  'gem-rm'(el) { S.ed.highlights.splice(Number(el.dataset.v), 1); S.dirty = true; edGems(); },
   'file-rm'(el) { S.ed.attachments.splice(Number(el.dataset.v), 1); S.dirty = true; edFiles(); },
   'pend-rm'(el) { S.ed.pending.splice(Number(el.dataset.v), 1); S.dirty = true; edFiles(); },
   async trash() {

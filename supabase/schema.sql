@@ -90,8 +90,18 @@ create table if not exists public.stories (
 );
 
 -- ชื่อเรื่องห้ามซ้ำ (ไม่นับเรื่องในถังขยะ)
-create unique index if not exists stories_title_unique
-  on public.stories (lower(title)) where deleted_at is null;
+-- ชื่อเรื่องห้ามซ้ำ (ชื่อบทซ้ำได้ถ้าอยู่คนละเล่ม) · ดู migrations/002_books.sql
+alter table public.stories add column if not exists book text;
+alter table public.stories add column if not exists book_order int;
+do $$ begin
+  alter table public.stories add constraint stories_book_check
+    check (book is null or (type = 'หนังสือ' and length(trim(book)) > 0));
+exception when duplicate_object then null; end $$;
+drop index if exists public.stories_title_unique;
+create unique index if not exists stories_title_book_unique
+  on public.stories (lower(coalesce(book, '')), lower(title)) where deleted_at is null;
+create index if not exists stories_book_idx
+  on public.stories (book, book_order) where book is not null and deleted_at is null;
 create index if not exists stories_status_idx on public.stories (status) where deleted_at is null;
 
 create or replace function public.touch_story()

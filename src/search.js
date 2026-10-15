@@ -17,6 +17,7 @@ export function buildIndex(stories) {
     tags: s.tags.map(norm),
     speakers: s.speakers.map(norm),
     source: norm(s.source),
+    book: norm(s.book),
   }));
 }
 
@@ -53,7 +54,7 @@ export function search(index, { q = '', off = new Set(), tags = new Set(), who =
       const inTags = e.tags.some((x) => x.includes(t)) || viaSyn.length > 0;
       viaSyn.forEach((x) => { if (!x.includes(t)) used.add(x); });
       const inSpeaker = e.speakers.some((x) => x.includes(t));
-      const inSource = e.source.includes(t);
+      const inSource = e.source.includes(t) || e.book.includes(t);
       const bodyHits = countHits(e.body, t);
       if (!inTitle && !inTags && !inSpeaker && !inSource && !bodyHits) { ok = false; return; }
       score += (inTitle ? 10 : 0) + (inTags ? 6 : 0) + (inSpeaker ? 4 : 0) + (inSource ? 2 : 0) + Math.min(bodyHits, 5);

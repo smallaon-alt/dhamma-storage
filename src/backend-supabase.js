@@ -11,6 +11,9 @@ export function create(url, anonKey) {
   const fail = (error, fallback) => {
     if (!error) return;
     if (error.code === '23505') throw Object.assign(new Error('ชื่อเรื่องนี้มีอยู่แล้ว ตั้งชื่ออื่น'), { code: 'duplicate' });
+    if (error.code === 'PGRST204' && /book/.test(error.message)) {
+      throw Object.assign(new Error('ฐานข้อมูลยังไม่รองรับหนังสือแบบแบ่งบท ให้แอดมินรันไฟล์ supabase/migrations/002_books.sql ใน SQL Editor ก่อน'), { code: 'migrate' });
+    }
     throw Object.assign(new Error(error.message || fallback), { code: error.code });
   };
 
@@ -57,6 +60,8 @@ export function create(url, anonKey) {
     // expectUpdatedAt: เวลาแก้ล่าสุดตอนเปิดฟอร์ม ถ้าไม่ตรง = มีคนแก้ทับระหว่างนั้น
     async saveStory(story, { expectUpdatedAt = null, force = false } = {}) {
       const row = Object.fromEntries(STORY_FIELDS.map((k) => [k, story[k]]));
+      // ส่งช่องหนังสือเฉพาะเมื่อมีค่า (ฐานข้อมูลที่ยังไม่รัน 002_books.sql จะได้บันทึกเรื่องประเภทอื่นได้ตามปกติ)
+      if (story.book !== undefined) { row.book = story.book; row.book_order = story.book_order ?? null; }
       if (!story.id) {
         const { data, error } = await sb.from('stories').insert(row).select().single();
         fail(error, 'บันทึกไม่สำเร็จ');
