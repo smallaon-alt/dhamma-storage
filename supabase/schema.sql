@@ -144,7 +144,7 @@ create table if not exists public.bookmarks (
   primary key (user_id, story_id)
 );
 
--- ---------- ping กัน Supabase พักโปรเจกต์ (Worker เขียนอย่างเดียว) ----------
+-- ---------- ping กัน Supabase พักโปรเจกต์ (GitHub Actions ใน repo dhamma-backup เขียนอย่างเดียว) ----------
 create table if not exists public.heartbeat (
   id        int primary key,
   pinged_at timestamptz not null default now()

@@ -467,14 +467,22 @@ function bookRef(s) {
   return `<a class="bookref" href="${bookHref(s.book)}" title="เปิดอ่านทั้งเล่ม">${ICON.book}${esc(s.book)}<span class="chno">บทที่ ${i}/${list.length}</span></a>`;
 }
 
+// บทที่อ่านค้างในเล่ม: เครื่องนี้จำไว้ = ใช้อันนั้น · เปิดจากเครื่องอื่น = บทแรกที่ยังไม่อ่าน (สถานะอ่านแล้วซิงก์ทุกเครื่อง)
+function bookAt(name, list) {
+  const at = store.get('yom-bookpos', {})[name];
+  if (at && list.some((x) => x.id === at)) return at;
+  if (!list.some(isRead)) return null;
+  return list.find((x) => !isRead(x))?.id || null;
+}
+
 // การ์ดหนังสือทั้งเล่ม: สารบัญย่อ + อ่านไปกี่บทแล้ว
 function bookCard(name, shown) {
   const all = chapters(name);
   const done = all.filter(isRead).length;
   const who = [...new Set(all.flatMap((x) => x.speakers))];
   const tags = [...new Set(all.flatMap((x) => x.tags))];
-  const at = store.get('yom-bookpos', {})[name];
-  const resume = at && all.some((x) => x.id === at) && done < all.length;
+  const at = bookAt(name, all);
+  const resume = at && done < all.length;
   const SHOW = 5;
   const pct = all.length ? Math.round((done / all.length) * 100) : 0;
   return `<article class="result bookcard ${done === all.length ? 'is-read' : ''}" style="${tc('หนังสือ')}">
@@ -604,7 +612,7 @@ function openBook(name) {
   const who = [...new Set(list.flatMap((x) => x.speakers))];
   const tags = [...new Set(list.flatMap((x) => x.tags))];
   const done = list.filter(isRead).length;
-  const at = store.get('yom-bookpos', {})[name];
+  const at = bookAt(name, list);
   const atCh = at && at !== list[0].id ? list.find((x) => x.id === at) : null;
   d.innerHTML = `
     <div class="d-head">

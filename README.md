@@ -3,9 +3,15 @@
 เว็บคลังธรรมะสำหรับโยม หน้าตาและวิธีใช้อิงแอปคลังเทศน์ แต่ระบบและข้อมูลแยกขาดจากกัน
 ทีมงานและพระเพิ่มเรื่องผ่านหน้าเว็บ ข้อมูลทั้งหมดอยู่ใน Supabase (แผนฟรี)
 
-สถานะ: **เฟส 1** (ฐานข้อมูล, ล็อกอิน, หน้าเพิ่มข้อมูล, หน้าค้นหาและอ่าน, ping + backup ด้วย GitHub Actions)
+ที่อยู่เว็บ: https://smallaon-alt.github.io/dhamma-storage/ · repo: `smallaon-alt/dhamma-storage` · สำรองข้อมูล: `smallaon-alt/dhamma-backup` (private)
+
+สถานะ: **เฟส 2**
+- เฟส 1: ฐานข้อมูล, ล็อกอิน, หน้าเพิ่มข้อมูล, หน้าค้นหาและอ่าน, หนังสือแบ่งบท, ping + backup ด้วย GitHub Actions
+- เฟส 2: อ่านแล้ว ✓ (ยกเว้นคำคม), ป้าย "ใหม่", จำตำแหน่งที่อ่านค้าง (อ่านต่อ %), ★ ที่ชอบ (บุ๊กมาร์ก)
+  ล็อกอินแล้วซิงก์ทุกเครื่องผ่าน Supabase · ไม่ล็อกอินเก็บในเบราว์เซอร์นั้น แล้วรวมเข้าบัญชีเมื่อล็อกอิน
+- ยังไม่ทำ: อภิธานศัพท์ (ไม่มีเส้นทางการเรียนรู้)
+
 ใช้บริการ: Supabase (ข้อมูล) · GitHub Pages (หน้าเว็บ) · GitHub Actions (ping + backup) · Google (ล็อกอิน) ฟรีทั้งหมด
-เฟส 2 จะเพิ่ม: อ่านแล้ว ✓, ป้าย "ใหม่", อ่านถึงไหน, บุ๊กมาร์ก (ตารางในฐานข้อมูลเตรียมไว้แล้ว)
 
 ## โครงไฟล์
 
@@ -21,7 +27,7 @@
 | `supabase/schema.sql` | ตาราง สิทธิ์ (RLS) และที่เก็บไฟล์แนบ (ติดตั้งใหม่รันไฟล์นี้ไฟล์เดียว) |
 | `supabase/migrations/` | ส่วนที่เพิ่มภายหลัง สำหรับฐานข้อมูลที่รัน schema.sql ไปก่อนแล้ว · `002_books.sql` = หนังสือแบ่งบท |
 | `privacy.html` | นโยบายความเป็นส่วนตัว (Google ต้องใช้ตอน Publish app) |
-| `backup-repo/` | ไฟล์สำหรับ repo backup แบบ private: ping กันพัก + สำรองข้อมูล |
+| `backup-repo/` | (อยู่ในโฟลเดอร์ในเครื่องเท่านั้น ไม่อัปโหลดขึ้น repo นี้) ไฟล์ต้นฉบับของ repo `dhamma-backup`: ping กันพัก + สำรองข้อมูล |
 
 ## 1. ลองดูในเครื่อง (โหมดทดลอง)
 
@@ -43,7 +49,7 @@ python3 -m http.server 8000
    - Authorized redirect URI: `https://<project-ref>.supabase.co/auth/v1/callback`
    - นำ Client ID / Secret ไปใส่ที่ Supabase → Authentication → Sign In / Providers → Google
 3. **ตั้งที่อยู่เว็บ**: Supabase → Authentication → URL Configuration
-   - Site URL: ที่อยู่เว็บจริง เช่น `https://khlang-yom.pages.dev`
+   - Site URL: ที่อยู่เว็บจริง `https://smallaon-alt.github.io/dhamma-storage/`
    - Redirect URLs: เพิ่ม `http://localhost:8000` และที่อยู่เว็บจริง
 4. **ใส่คีย์**: Supabase → Project Settings → API → คัดลอก Project URL และ anon/publishable key ใส่ใน `config.js`
    (ห้ามใช้ service_role / secret key ในเว็บ)
@@ -55,15 +61,15 @@ python3 -m http.server 8000
 
 ## 3. ขึ้นเว็บด้วย GitHub Pages (ฟรี)
 
-1. GitHub → **New repository** → ชื่อ `khlang-yom` → **Public** → Create
+1. GitHub → **New repository** → ชื่อ `dhamma-storage` → **Public** → Create (สร้างไว้แล้วที่ `smallaon-alt/dhamma-storage`)
 2. ในหน้า repo กด **uploading an existing file** → ลากไฟล์และโฟลเดอร์เหล่านี้ไปวาง:
-   `index.html`, `config.js`, `privacy.html`, `README.md`, โฟลเดอร์ `src` และ `supabase`
+   `index.html`, `config.js`, `privacy.html`, `README.md`, `.nojekyll`, โฟลเดอร์ `src` และ `supabase`
    (ไม่ต้องอัปโหลด `backup-repo`) → **Commit changes**
 3. Settings → **Pages** → Source: Deploy from a branch → Branch: `main` / `(root)` → Save
-   รอ 1–2 นาที จะได้ที่อยู่ `https://<ชื่อบัญชี>.github.io/khlang-yom/`
+   รอ 1–2 นาที จะได้ที่อยู่ `https://smallaon-alt.github.io/dhamma-storage/`
 4. นำที่อยู่นี้ไปเพิ่มใน
-   - Supabase → Authentication → URL Configuration: Site URL = ที่อยู่เว็บ และ Redirect URLs เพิ่ม `https://<ชื่อบัญชี>.github.io/khlang-yom/**`
-   - Google Cloud → Clients → Authorized JavaScript origins เพิ่ม `https://<ชื่อบัญชี>.github.io`
+   - Supabase → Authentication → URL Configuration: Site URL = ที่อยู่เว็บ และ Redirect URLs เพิ่ม `https://smallaon-alt.github.io/dhamma-storage/**`
+   - Google Cloud → Clients → Authorized JavaScript origins เพิ่ม `https://smallaon-alt.github.io`
    - Google Cloud → Branding: Home page = ที่อยู่เว็บ, Privacy policy = ที่อยู่เว็บ + `privacy.html` แล้วกด **Publish app**
 
 **แก้เว็บภายหลัง**: เปิดไฟล์ใน repo บนเว็บ GitHub → ไอคอนดินสอ → แก้ → Commit · หน้าเว็บอัปเดตเองใน 1–2 นาที
@@ -73,7 +79,7 @@ python3 -m http.server 8000
 ต้องทำทันทีหลังสร้างโปรเจกต์ Supabase เพราะแผนฟรีจะพักโปรเจกต์ที่เงียบเกิน 7 วัน
 และถ้าถูกพัก **เว็บจะอ่านไม่ได้เลย**
 
-1. GitHub → New repository → ชื่อ `khlang-yom-backup` → **Private** → ติ๊ก Add a README → Create
+1. GitHub → New repository → ชื่อ `dhamma-backup` → **Private** → ติ๊ก Add a README → Create (สร้างไว้แล้วที่ `smallaon-alt/dhamma-backup`)
 2. **Add file → Create new file** → ช่องชื่อพิมพ์ `.github/workflows/keepalive-backup.yml`
    → วางเนื้อหาจากไฟล์ `backup-repo/keepalive-backup.yml` → Commit
 3. Settings → **Secrets and variables → Actions**
@@ -90,6 +96,6 @@ python3 -m http.server 8000
 | บทบาท | ทำอะไรได้ |
 | --- | --- |
 | ยังไม่ล็อกอิน | ค้นหาและอ่านเรื่องที่เผยแพร่แล้ว |
-| โยม (reader) | เหมือนด้านบน + (เฟส 2) บันทึกการอ่านและบุ๊กมาร์กของตัวเอง |
+| โยม (reader) | เหมือนด้านบน + บันทึกการอ่านและเรื่องที่ชอบของตัวเอง (ซิงก์ทุกเครื่อง) |
 | ผู้ดูแลเนื้อหา (editor) | + เห็นร่าง เพิ่ม แก้ ย้ายไปถังขยะ กู้คืน แนบไฟล์ จัดการแท็ก |
 | แอดมิน (admin) | + ตั้งบทบาทผู้ใช้ ลบเรื่องถาวร |
